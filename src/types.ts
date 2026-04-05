@@ -61,6 +61,11 @@ export interface AppConfig {
     url: string;
     serviceRoleKey: string;
   };
+  schedule: {
+    enabled: boolean;
+    cron: string;      // standard 5-field cron expression
+    sitemapUrl: string;
+  };
   logging: {
     level: string;
   };

@@ -1,6 +1,7 @@
 import { loadConfig } from './config';
 import { createServer } from './server';
 import { startWorkers } from './workers';
+import { startScheduler } from './scheduler';
 import pino from 'pino';
 
 async function main() {
@@ -18,7 +19,10 @@ async function main() {
   // Start all enabled BullMQ workers
   startWorkers(log);
 
-  // Start HTTP API
+  // Start built-in cron scheduler
+  startScheduler(log);
+
+  // Start HTTP API (for manual triggers and status checks)
   const app = createServer();
   const port = config.server.port ?? 3001;
   app.listen(port, () => {

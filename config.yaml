@@ -82,6 +82,13 @@ indexNow:
   key: ""
   keyLocation: ""  # e.g. https://trade.aero/{key}.txt
 
+# Built-in scheduler — runs a full warming job on the server without needing
+# GitHub Actions or any external trigger. Uses standard 5-field cron syntax.
+schedule:
+  enabled: true
+  cron: "0 6,18 * * *"        # twice daily at 06:00 and 18:00 server time
+  sitemapUrl: "https://trade.aero/sitemap.xml"
+
 redis:
   host: "localhost"
   port: 6379

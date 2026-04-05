@@ -1,84 +1,73 @@
-name: Warm Cache
+name: Warm Cache (manual)
+
+# Manual one-click trigger from the GitHub Actions UI.
+# The CacheWarmer service schedules itself internally via node-cron
+# (see schedule.cron in config.yaml — default: twice daily 06:00/18:00).
+# Use this workflow when you need an immediate out-of-schedule warm run.
+#
+# Runner: must be a self-hosted runner installed on the same server as the
+# CacheWarmer service so it can reach the local API without a public URL.
+#
+# Self-hosted runner setup:
+#   1. GitHub repo → Settings → Actions → Runners → New self-hosted runner
+#   2. Follow the install steps on your server
+#   3. Tag the runner with "cachewarmer" (used in runs-on below)
 
 on:
-  # Manual trigger from the GitHub Actions UI or via API dispatch
   workflow_dispatch:
     inputs:
       sitemap_url:
-        description: 'Sitemap URL to warm (leave blank to use SITEMAP_URL secret)'
+        description: 'Sitemap URL (leave blank to use the value in config.yaml)'
         required: false
         type: string
       dry_run:
-        description: 'Dry run — parse sitemap only, do not warm'
+        description: 'Dry run — health-check only, do not enqueue a job'
         required: false
         type: boolean
         default: false
 
-  # Scheduled warm run — twice daily
-  schedule:
-    - cron: '0 6 * * *'   # 06:00 UTC
-    - cron: '0 18 * * *'  # 18:00 UTC
-
 jobs:
   warm:
-    name: Warm cache
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    name: Trigger warm run
+    runs-on: [self-hosted, cachewarmer]
+    timeout-minutes: 5
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Determine sitemap URL
-        id: sitemap
+      - name: Health check
         run: |
-          URL="${{ github.event.inputs.sitemap_url || secrets.SITEMAP_URL || 'https://trade.aero/sitemap.xml' }}"
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          RESPONSE=$(curl -sf http://localhost:3001/health || echo '{"ok":false}')
+          echo "Health: $RESPONSE"
+          echo "$RESPONSE" | grep -q '"ok":true' || (echo "::error::CacheWarmer not running" && exit 1)
+
+      - name: Dry run
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: echo "Dry run — service is healthy, no job enqueued."
 
       - name: Submit warming job
         if: ${{ github.event.inputs.dry_run != 'true' }}
         env:
-          CACHEWARMER_API_URL: ${{ secrets.CACHEWARMER_API_URL }}
           CACHEWARMER_API_KEY: ${{ secrets.CACHEWARMER_API_KEY }}
         run: |
-          RESPONSE=$(curl -s -w "\n%{http_code}" \
-            -X POST "$CACHEWARMER_API_URL/jobs" \
-            -H "Content-Type: application/json" \
-            -H "X-API-Key: $CACHEWARMER_API_KEY" \
-            -d "{\"sitemapUrl\": \"${{ steps.sitemap.outputs.url }}\"}")
+          SITEMAP="${{ github.event.inputs.sitemap_url }}"
+          if [ -z "$SITEMAP" ]; then
+            # Read sitemapUrl from config.yaml on the server
+            SITEMAP=$(grep 'sitemapUrl:' /opt/cachewarmer/config.yaml | awk '{print $2}' | tr -d '"' || echo '')
+          fi
 
-          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | head -n-1)
-
-          echo "HTTP status: $HTTP_CODE"
-          echo "Response: $BODY"
-
-          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-            echo "::error::Warming job submission failed (HTTP $HTTP_CODE)"
+          if [ -z "$SITEMAP" ]; then
+            echo "::error::No sitemapUrl provided and could not read from config.yaml"
             exit 1
           fi
 
-          JOB_ID=$(echo "$BODY" | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8'); console.log(JSON.parse(d).jobId)")
-          echo "job_id=$JOB_ID" >> "$GITHUB_OUTPUT"
-          echo "Warming job submitted: $JOB_ID"
+          echo "Submitting job for: $SITEMAP"
+          RESPONSE=$(curl -sf -w "\n%{http_code}" \
+            -X POST http://localhost:3001/jobs \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $CACHEWARMER_API_KEY" \
+            -d "{\"sitemapUrl\": \"$SITEMAP\"}")
 
-      - name: Dry run — parse sitemap only
-        if: ${{ github.event.inputs.dry_run == 'true' }}
-        env:
-          CACHEWARMER_API_URL: ${{ secrets.CACHEWARMER_API_URL }}
-          CACHEWARMER_API_KEY: ${{ secrets.CACHEWARMER_API_KEY }}
-        run: |
-          echo "Dry run: would warm sitemap ${{ steps.sitemap.outputs.url }}"
-          RESPONSE=$(curl -s \
-            "$CACHEWARMER_API_URL/health" \
-            -H "X-API-Key: $CACHEWARMER_API_KEY")
-          echo "Health check: $RESPONSE"
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n-1)
+          echo "HTTP $HTTP_CODE — $BODY"
+
+          [ "$HTTP_CODE" = "202" ] || (echo "::error::Job submission failed (HTTP $HTTP_CODE)" && exit 1)
