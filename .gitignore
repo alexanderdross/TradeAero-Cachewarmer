@@ -24,4 +24,9 @@ Thumbs.db
 # Env
 .env.local
 .env*.local
+
+# TypeScript
 tsconfig.tsbuildinfo
+
+# Next.js
+next-env.d.ts
