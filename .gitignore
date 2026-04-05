@@ -1,0 +1,27 @@
+# Secrets & local config
+config.local.yaml
+credentials/
+
+# Build output
+dist/
+.next/
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Env
+.env.local
+.env*.local
+tsconfig.tsbuildinfo

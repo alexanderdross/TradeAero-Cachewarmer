@@ -1,0 +1,104 @@
+# TradeAero CacheWarmer — default configuration
+# Copy this file to config.local.yaml and fill in real credentials.
+# config.local.yaml values always override values here.
+# NEVER commit config.local.yaml to git.
+
+server:
+  port: 3001
+  # Replace with a strong random key: openssl rand -hex 32
+  apiKey: "CHANGE_ME"
+
+orchestration:
+  # Set true to dispatch index-listings.yml after every successful warming run.
+  # Requires a GitHub PAT with `workflow` scope on TradeAero-Indexing.
+  triggerIndexingAfterWarming: false
+  githubPat: ""
+  githubOwner: "alexanderdross"
+  githubRepo: "TradeAero-Indexing"
+  githubWorkflow: "index-listings.yml"
+  githubRef: "main"
+
+# CDN warming — HTTP GET with no-cache headers to populate edge caches.
+# For full JavaScript-rendered warming, replace axios calls with Puppeteer.
+cdn:
+  enabled: true
+  concurrency: 3
+
+# Cloudflare Cache Purge API — purges then re-warms each URL.
+# Dashboard → My Profile → API Tokens → Custom Token (Zone → Cache Purge → Purge).
+# Zone ID is in the domain overview sidebar under "API".
+cloudflare:
+  enabled: false
+  apiToken: ""
+  zoneId: ""
+
+# Vercel Edge Network — re-warms each URL through Vercel's edge.
+# Dashboard → Settings → Tokens.
+vercel:
+  enabled: false
+  apiToken: ""
+  teamId: ""  # optional; only needed for team accounts (starts with team_)
+
+# Facebook Open Graph cache refresh via Graph API /scrape.
+# developers.facebook.com → Create Business app → note App ID + App Secret.
+# No app review or publication required.
+facebook:
+  enabled: false
+  appId: ""
+  appSecret: ""
+  rateLimitPerSecond: 10  # conservative; hard limit is 200 calls/hour per App
+
+# LinkedIn Post Inspector cache refresh (session cookie auth).
+# DevTools → Application → Cookies → linkedin.com → copy li_at value.
+# WARNING: li_at grants full account access; expires ~1 year.
+linkedin:
+  enabled: false
+  sessionCookie: ""
+  concurrency: 1        # keep at 1 to avoid detection
+  delayBetweenRequests: 5000  # ms; minimum 5 000 ms recommended
+
+# Google Indexing API — URL_UPDATED notifications.
+# Cloud Console → Enable "Web Search Indexing API" → Create Service Account →
+# Download JSON key → Add SA email as Owner in Search Console.
+# Shares the 200 URL/day quota with TradeAero-Indexing — disable if already covered.
+google:
+  enabled: false
+  serviceAccountJson: ""  # paste full JSON key content here (or path: ./credentials/sa.json)
+  dailyQuota: 200
+
+# Bing Webmaster API — direct URL submission to Bing.
+# bing.com/webmasters → Settings → API Access → Generate key.
+bing:
+  enabled: false
+  apiKey: ""
+  dailyQuota: 10000  # default; extendable via Bing Webmaster Tools
+
+# IndexNow — single batch notifies Bing, Yandex, Seznam, Naver.
+# Generate key: openssl rand -hex 16
+# Host key file at: https://trade.aero/{key}.txt (content: the key itself)
+# Reuse the same key as TradeAero-Indexing (INDEXNOW_API_KEY) — submissions are idempotent.
+indexNow:
+  enabled: false
+  key: ""
+  keyLocation: ""  # e.g. https://trade.aero/{key}.txt
+
+# Built-in scheduler — runs a full warming job on the server without needing
+# GitHub Actions or any external trigger. Uses standard 5-field cron syntax.
+schedule:
+  enabled: true
+  cron: "0 6,18 * * *"        # twice daily at 06:00 and 18:00 server time
+  sitemapUrl: "https://trade.aero/sitemap.xml"
+
+redis:
+  host: "localhost"
+  port: 6379
+
+# Optional: persist run history to Supabase (cachewarmer_runs table).
+# Install @supabase/supabase-js separately if enabling.
+supabase:
+  enabled: false
+  url: ""
+  serviceRoleKey: ""
+
+logging:
+  level: "info"  # debug | info | warn | error
