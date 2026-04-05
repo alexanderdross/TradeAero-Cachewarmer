@@ -8,6 +8,8 @@ import { warmLinkedin } from './linkedin';
 import { warmGoogle } from './google';
 import { warmBing } from './bing';
 import { warmIndexNow } from './indexnow';
+import { warmTwitter } from './twitter';
+import { warmPinterest } from './pinterest';
 
 export type { ChannelResult };
 
@@ -27,6 +29,8 @@ export async function runAllChannels(
   if (ch('google')?.enabled) tasks.push({ name: 'google', promise: warmGoogle(urls, ch('google')!.config as any) });
   if (ch('bing')?.enabled) tasks.push({ name: 'bing', promise: warmBing(urls, ch('bing')!.config as any) });
   if (ch('indexnow')?.enabled) tasks.push({ name: 'indexnow', promise: warmIndexNow(urls, ch('indexnow')!.config as any) });
+  if (ch('twitter')?.enabled) tasks.push({ name: 'twitter', promise: warmTwitter(urls, ch('twitter')!.config as any) });
+  if (ch('pinterest')?.enabled) tasks.push({ name: 'pinterest', promise: warmPinterest(urls, ch('pinterest')!.config as any) });
 
   const results = await Promise.allSettled(tasks.map((t) => t.promise));
   const out: Record<string, ChannelResult> = {};
