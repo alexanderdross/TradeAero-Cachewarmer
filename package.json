@@ -1,36 +1,27 @@
 {
   "name": "tradeaero-cachewarmer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Cache warming microservice for TradeAero — warms CDN, social, and search engine caches before indexing.",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc",
-    "start": "node dist/index.js",
+    "dev": "next dev --port 3001",
+    "build": "next build",
+    "start": "next start --port 3001",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
+    "next": "^15.2.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "@supabase/supabase-js": "^2.49.4",
     "axios": "^1.7.9",
-    "bullmq": "^5.28.0",
-    "express": "^4.21.2",
     "fast-xml-parser": "^4.5.0",
     "google-auth-library": "^9.15.0",
-    "ioredis": "^5.4.1",
-    "js-yaml": "^4.1.0",
-    "node-cron": "^3.0.3",
-    "p-limit": "^5.0.0",
-    "pino": "^9.4.0",
-    "pino-pretty": "^11.3.0"
+    "p-limit": "^5.0.0"
   },
   "devDependencies": {
-    "@types/express": "^5.0.0",
-    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.0",
-    "@types/node-cron": "^3.0.11",
-    "tsx": "^4.19.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "typescript": "^5.7.2"
-  },
-  "engines": {
-    "node": ">=20.0.0"
   }
 }

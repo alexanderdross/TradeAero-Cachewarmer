@@ -1,9 +1,10 @@
-# Secrets & local config — NEVER commit these
+# Secrets & local config
 config.local.yaml
 credentials/
 
 # Build output
 dist/
+.next/
 
 # Dependencies
 node_modules/
@@ -20,5 +21,6 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Puppeteer cache (if added later)
-.cache/
+# Env
+.env.local
+.env*.local
