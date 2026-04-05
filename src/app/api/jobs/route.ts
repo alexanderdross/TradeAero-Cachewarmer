@@ -53,7 +53,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (config.orchestration.enabled && config.indexingEnabled) {
-      try { await triggerIndexing(config.orchestration.config); } catch { /* non-fatal */ }
+      try { await triggerIndexing(); } catch { /* non-fatal */ }
     }
 
     return NextResponse.json({ jobId, runId, channelResults, urlsTotal: urls.length });
