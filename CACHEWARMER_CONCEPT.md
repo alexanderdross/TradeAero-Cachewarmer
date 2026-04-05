@@ -58,8 +58,8 @@ The service runs before TradeAero-Indexing: once a warming job completes success
 | Vercel Edge | Purge API + HTTP GET | Purge stale entry → re-warm |
 | Facebook OG | Graph API `/scrape` endpoint | Refreshes Open Graph tag cache |
 | LinkedIn | Post Inspector (cookie-auth) | Refreshes link preview card |
-| Twitter / X | Card validator endpoint | Refreshes Twitter card preview |
-| Pinterest | URL validator endpoint | Refreshes Pin preview metadata |
+| Twitter / X | oEmbed endpoint (Bearer token optional) | Triggers Twitterbot re-scrape of twitter:card meta tags |
+| Pinterest | oEmbed API v5 (App access token) | Triggers Pinterest re-scrape of OG/card meta tags |
 | Google | Indexing API (`URL_UPDATED`) | Notifies Googlebot of content change |
 | Bing | Bing Webmaster API + IndexNow | Notifies Bing + Yandex + Seznam + Naver |
 
@@ -204,6 +204,68 @@ The service runs before TradeAero-Indexing: once a warming job completes success
 
 ---
 
+### 4.8 Twitter / X (oEmbed Endpoint)
+
+**Purpose:** Trigger Twitterbot to re-scrape `twitter:card` meta tags on the target page, refreshing how URLs appear when shared on X/Twitter.
+
+**Mechanism:** `GET https://publish.twitter.com/oembed?url={encodedUrl}` causes Twitter's scraper to re-fetch the page. This is a public endpoint — no API key is required — but including a Bearer token improves reliability.
+
+**Setup:**
+1. Go to [developer.twitter.com](https://developer.twitter.com) → **Projects & Apps → Create App**.
+2. Under **App Settings → Keys and Tokens**, click **Bearer Token → Generate**.
+3. Copy the Bearer token and add to `config.local.yaml` as `twitter.bearerToken`.
+4. Free-tier developer app is sufficient — no Elevated access required.
+
+> The Bearer token does not expire unless explicitly revoked.
+
+**Rate limits:**
+
+| Limit | Value |
+|-------|-------|
+| Official rate limit | None published for oEmbed |
+| Recommended delay | ≥ 2,000 ms between requests (~30/min) |
+
+**Config:**
+```yaml
+twitter:
+  enabled: true
+  bearerToken: "AAAA…"
+  delayBetweenRequests: 2000
+```
+
+---
+
+### 4.9 Pinterest (oEmbed API v5)
+
+**Purpose:** Trigger Pinterest to re-scrape OG and `twitter:card` meta tags on the target page, refreshing how URLs appear as Pins.
+
+**Mechanism:** `GET https://api.pinterest.com/v5/oembed/?url={encodedUrl}&access_token={token}` causes Pinterest's scraper to re-fetch the page. This is more reliable than the public widget endpoint (`widgets.pinterest.com/v1/urls/count.json`) which only looks up existing pin counts.
+
+**Setup:**
+1. Go to [developers.pinterest.com](https://developers.pinterest.com) → **My Apps → Create App**.
+2. Add `pins:read` scope (minimum required). No app review required for oEmbed access.
+3. Under **Access tokens**, generate a user access token. Enable `offline_access` scope for a non-expiring token.
+4. Verify your website domain in [Pinterest Business Hub](https://business.pinterest.com) to improve scrape success rates.
+5. Copy the access token and add to `config.local.yaml` as `pinterest.accessToken`.
+
+**Rate limits:**
+
+| Limit | Value |
+|-------|-------|
+| Requests per hour per token | 1,000 |
+| Recommended delay | ≥ 3,600 ms between requests |
+| Max URLs per warming run | 900 (stay under hourly cap) |
+
+**Config:**
+```yaml
+pinterest:
+  enabled: true
+  accessToken: "pina_…"
+  delayBetweenRequests: 3600
+```
+
+---
+
 ## 5. Service Architecture
 
 ### One Worker Per Target
@@ -217,8 +279,8 @@ workers/
 ├── vercelWorker.ts     — Edge Purge API + re-warm
 ├── facebookWorker.ts   — Graph API /scrape
 ├── linkedinWorker.ts   — Post Inspector (cookie-auth)
-├── twitterWorker.ts    — Card validator
-├── pinterestWorker.ts  — URL validator
+├── twitterWorker.ts    — oEmbed endpoint (Twitterbot re-scrape)
+├── pinterestWorker.ts  — oEmbed API v5 (Pinterest re-scrape)
 ├── googleWorker.ts     — Indexing API (URL_UPDATED)
 └── bingWorker.ts       — Webmaster API + IndexNow
 ```
@@ -386,6 +448,16 @@ vercel:
   enabled: false
   apiToken: "DEIN_VERCEL_API_TOKEN"
   teamId: ""   # only needed for team accounts (starts with team_)
+
+twitter:
+  enabled: true
+  bearerToken: "DEIN_TWITTER_BEARER_TOKEN"
+  delayBetweenRequests: 2000
+
+pinterest:
+  enabled: true
+  accessToken: "DEIN_PINTEREST_ACCESS_TOKEN"
+  delayBetweenRequests: 3600
 
 redis:
   host: "localhost"
