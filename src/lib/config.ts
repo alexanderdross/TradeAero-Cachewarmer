@@ -1,6 +1,6 @@
 import { getSupabase } from './supabase';
 
-export type ChannelName = 'cdn' | 'cloudflare' | 'vercel' | 'facebook' | 'linkedin' | 'google' | 'bing' | 'indexnow';
+export type ChannelName = 'cdn' | 'cloudflare' | 'vercel' | 'facebook' | 'linkedin' | 'google' | 'bing' | 'indexnow' | 'twitter' | 'pinterest';
 
 export interface ChannelEntry {
   enabled: boolean;

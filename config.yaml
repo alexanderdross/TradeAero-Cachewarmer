@@ -82,6 +82,23 @@ indexNow:
   key: ""
   keyLocation: ""  # e.g. https://trade.aero/{key}.txt
 
+# Twitter / X — triggers Twitterbot to re-scrape twitter:card meta tags.
+# Hits publish.twitter.com/oembed — public endpoint, Bearer token optional but recommended.
+# developer.twitter.com → App → Keys and Tokens → Bearer Token → Generate
+# Free-tier app sufficient; no Elevated access required.
+twitter:
+  enabled: false
+  bearerToken: ""
+  delayBetweenRequests: 2000  # ms; ~30 req/min
+
+# Pinterest — triggers Pinterest to re-scrape OG/card meta tags via oEmbed API v5.
+# developers.pinterest.com → My Apps → Create App (pins:read scope) → Access tokens
+# Verify domain in Pinterest Business Hub to improve scrape success.
+pinterest:
+  enabled: false
+  accessToken: ""
+  delayBetweenRequests: 3600  # ms; keeps well under 1,000 req/hour limit
+
 # Built-in scheduler — runs a full warming job on the server without needing
 # GitHub Actions or any external trigger. Uses standard 5-field cron syntax.
 schedule:
