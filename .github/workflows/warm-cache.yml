@@ -1,23 +1,17 @@
 name: Warm Cache (manual)
 
 # Manual one-click trigger from the GitHub Actions UI.
-# The CacheWarmer service schedules itself internally via node-cron
-# (see schedule.cron in config.yaml — default: twice daily 06:00/18:00).
-# Use this workflow when you need an immediate out-of-schedule warm run.
+# Calls the CacheWarmer Vercel deployment directly via its HTTP API.
+# The service also runs automatically twice daily via Vercel Cron (06:00 + 18:00 UTC).
 #
-# Runner: must be a self-hosted runner installed on the same server as the
-# CacheWarmer service so it can reach the local API without a public URL.
-#
-# Self-hosted runner setup:
-#   1. GitHub repo → Settings → Actions → Runners → New self-hosted runner
-#   2. Follow the install steps on your server
-#   3. Tag the runner with "cachewarmer" (used in runs-on below)
+# Required repository secret: CACHEWARMER_API_KEY
+# Required repository variable: CACHEWARMER_URL (e.g. https://trade-aero-cachewarmer.vercel.app)
 
 on:
   workflow_dispatch:
     inputs:
       sitemap_url:
-        description: 'Sitemap URL (leave blank to use the value in config.yaml)'
+        description: 'Sitemap URL (leave blank to use SITEMAP_URL from Vercel env)'
         required: false
         type: string
       dry_run:
@@ -29,15 +23,17 @@ on:
 jobs:
   warm:
     name: Trigger warm run
-    runs-on: [self-hosted, cachewarmer]
-    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Health check
+        env:
+          CACHEWARMER_URL: ${{ vars.CACHEWARMER_URL }}
         run: |
-          RESPONSE=$(curl -sf http://localhost:3001/health || echo '{"ok":false}')
+          RESPONSE=$(curl -sf "$CACHEWARMER_URL/api/health" || echo '{"ok":false}')
           echo "Health: $RESPONSE"
-          echo "$RESPONSE" | grep -q '"ok":true' || (echo "::error::CacheWarmer not running" && exit 1)
+          echo "$RESPONSE" | grep -q '"ok":true' || (echo "::error::CacheWarmer not reachable at $CACHEWARMER_URL" && exit 1)
 
       - name: Dry run
         if: ${{ github.event.inputs.dry_run == 'true' }}
@@ -46,28 +42,27 @@ jobs:
       - name: Submit warming job
         if: ${{ github.event.inputs.dry_run != 'true' }}
         env:
+          CACHEWARMER_URL: ${{ vars.CACHEWARMER_URL }}
           CACHEWARMER_API_KEY: ${{ secrets.CACHEWARMER_API_KEY }}
         run: |
           SITEMAP="${{ github.event.inputs.sitemap_url }}"
-          if [ -z "$SITEMAP" ]; then
-            # Read sitemapUrl from config.yaml on the server
-            SITEMAP=$(grep 'sitemapUrl:' /opt/cachewarmer/config.yaml | awk '{print $2}' | tr -d '"' || echo '')
-          fi
 
           if [ -z "$SITEMAP" ]; then
-            echo "::error::No sitemapUrl provided and could not read from config.yaml"
-            exit 1
+            BODY='{}'
+          else
+            BODY="{\"sitemapUrl\": \"$SITEMAP\"}"
           fi
 
-          echo "Submitting job for: $SITEMAP"
+          echo "Submitting job (body: $BODY)"
           RESPONSE=$(curl -sf -w "\n%{http_code}" \
-            -X POST http://localhost:3001/jobs \
+            -X POST "$CACHEWARMER_URL/api/jobs" \
             -H "Content-Type: application/json" \
             -H "X-API-Key: $CACHEWARMER_API_KEY" \
-            -d "{\"sitemapUrl\": \"$SITEMAP\"}")
+            -d "$BODY")
 
           HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | head -n-1)
-          echo "HTTP $HTTP_CODE — $BODY"
+          RESULT=$(echo "$RESPONSE" | head -n-1)
+          echo "HTTP $HTTP_CODE"
+          echo "$RESULT"
 
-          [ "$HTTP_CODE" = "202" ] || (echo "::error::Job submission failed (HTTP $HTTP_CODE)" && exit 1)
+          [ "$HTTP_CODE" = "200" ] || (echo "::error::Job submission failed (HTTP $HTTP_CODE)" && exit 1)
