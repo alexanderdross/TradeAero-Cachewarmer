@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  cachewarmer:
+    build: .
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - ./config.local.yaml:/app/config.local.yaml:ro
+      - ./credentials:/app/credentials:ro
+    ports:
+      - "3001:3001"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis-data:

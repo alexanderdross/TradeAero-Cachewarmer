@@ -1,0 +1,84 @@
+name: Warm Cache
+
+on:
+  # Manual trigger from the GitHub Actions UI or via API dispatch
+  workflow_dispatch:
+    inputs:
+      sitemap_url:
+        description: 'Sitemap URL to warm (leave blank to use SITEMAP_URL secret)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry run — parse sitemap only, do not warm'
+        required: false
+        type: boolean
+        default: false
+
+  # Scheduled warm run — twice daily
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC
+    - cron: '0 18 * * *'  # 18:00 UTC
+
+jobs:
+  warm:
+    name: Warm cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Determine sitemap URL
+        id: sitemap
+        run: |
+          URL="${{ github.event.inputs.sitemap_url || secrets.SITEMAP_URL || 'https://trade.aero/sitemap.xml' }}"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Submit warming job
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        env:
+          CACHEWARMER_API_URL: ${{ secrets.CACHEWARMER_API_URL }}
+          CACHEWARMER_API_KEY: ${{ secrets.CACHEWARMER_API_KEY }}
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST "$CACHEWARMER_API_URL/jobs" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $CACHEWARMER_API_KEY" \
+            -d "{\"sitemapUrl\": \"${{ steps.sitemap.outputs.url }}\"}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n-1)
+
+          echo "HTTP status: $HTTP_CODE"
+          echo "Response: $BODY"
+
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Warming job submission failed (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
+          JOB_ID=$(echo "$BODY" | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8'); console.log(JSON.parse(d).jobId)")
+          echo "job_id=$JOB_ID" >> "$GITHUB_OUTPUT"
+          echo "Warming job submitted: $JOB_ID"
+
+      - name: Dry run — parse sitemap only
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        env:
+          CACHEWARMER_API_URL: ${{ secrets.CACHEWARMER_API_URL }}
+          CACHEWARMER_API_KEY: ${{ secrets.CACHEWARMER_API_KEY }}
+        run: |
+          echo "Dry run: would warm sitemap ${{ steps.sitemap.outputs.url }}"
+          RESPONSE=$(curl -s \
+            "$CACHEWARMER_API_URL/health" \
+            -H "X-API-Key: $CACHEWARMER_API_KEY")
+          echo "Health check: $RESPONSE"

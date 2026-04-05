@@ -1,0 +1,54 @@
+# config.local.yaml.example — copy to config.local.yaml and fill in real values.
+# This file is safe to commit. config.local.yaml is gitignored.
+
+server:
+  apiKey: "replace-with-strong-random-key"
+
+orchestration:
+  triggerIndexingAfterWarming: true
+  githubPat: "ghp_your_token_here"
+
+cloudflare:
+  enabled: true
+  apiToken: "your_cloudflare_api_token"
+  zoneId: "your_zone_id"
+
+facebook:
+  enabled: true
+  appId: "your_app_id"
+  appSecret: "your_app_secret"
+
+linkedin:
+  enabled: true
+  sessionCookie: "your_li_at_cookie_value"
+
+google:
+  enabled: true
+  serviceAccountJson: |
+    {
+      "type": "service_account",
+      "project_id": "your-project-id",
+      "private_key_id": "...",
+      "private_key": "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n",
+      "client_email": "cachewarmer@your-project-id.iam.gserviceaccount.com",
+      "client_id": "...",
+      "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+      "token_uri": "https://oauth2.googleapis.com/token"
+    }
+
+bing:
+  enabled: true
+  apiKey: "your_bing_webmaster_api_key"
+
+indexNow:
+  enabled: true
+  key: "your_indexnow_key"
+  keyLocation: "https://trade.aero/your_indexnow_key.txt"
+
+supabase:
+  enabled: true
+  url: "https://your-project.supabase.co"
+  serviceRoleKey: "your_service_role_key"
+
+logging:
+  level: "info"
