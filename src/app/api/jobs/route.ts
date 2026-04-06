@@ -23,23 +23,24 @@ export async function POST(request: NextRequest) {
   let body: { sitemapUrl?: string; urls?: string[] } = {};
   try { body = await request.json(); } catch { /* empty body */ }
 
-  const config = await loadServiceConfig();
-  if (!config.cachwarmerEnabled) return NextResponse.json({ error: 'CacheWarmer is disabled' }, { status: 503 });
-
-  const sitemapUrl = body.sitemapUrl ?? config.sitemapUrl;
-  let urls: string[] = body.urls ?? [];
-
-  if (!urls.length) {
-    urls = await fetchSitemapUrls(sitemapUrl);
-  }
-  if (!urls.length) {
-    return NextResponse.json({ error: 'No URLs found in sitemap' }, { status: 400 });
-  }
-
-  const jobId = crypto.randomUUID();
-  const runId = await createRun({ job_id: jobId, sitemap_url: sitemapUrl, urls_total: urls.length, urls_success: 0, urls_failed: 0, triggered_by: 'manual', status: 'running' });
-
+  let runId: string | undefined;
   try {
+    const config = await loadServiceConfig();
+    if (!config.cachwarmerEnabled) return NextResponse.json({ error: 'CacheWarmer is disabled' }, { status: 503 });
+
+    const sitemapUrl = body.sitemapUrl ?? config.sitemapUrl;
+    let urls: string[] = body.urls ?? [];
+
+    if (!urls.length) {
+      urls = await fetchSitemapUrls(sitemapUrl);
+    }
+    if (!urls.length) {
+      return NextResponse.json({ error: 'No URLs found in sitemap' }, { status: 400 });
+    }
+
+    const jobId = crypto.randomUUID();
+    runId = await createRun({ job_id: jobId, sitemap_url: sitemapUrl, urls_total: urls.length, urls_success: 0, urls_failed: 0, triggered_by: 'manual', status: 'running' });
+
     const channelResults = await runAllChannels(urls, config.channels);
     const totalSuccess = Object.values(channelResults).reduce((s, r) => s + r.success, 0);
     const totalFailed = Object.values(channelResults).reduce((s, r) => s + r.failed, 0);
@@ -58,7 +59,8 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ jobId, runId, channelResults, urlsTotal: urls.length });
   } catch (err) {
-    await updateRun(runId, { status: 'failed', finished_at: new Date().toISOString() });
-    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
+    const message = (err as Error).message ?? String(err);
+    if (runId) await updateRun(runId, { status: 'failed', finished_at: new Date().toISOString() }).catch(() => {});
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
