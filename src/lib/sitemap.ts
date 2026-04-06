@@ -49,8 +49,12 @@ export async function fetchSitemapUrls(
     const childUrls = extractFromIndex(parsed);
     const results: string[] = [];
     for (const childUrl of childUrls) {
-      const children = await fetchSitemapUrls(childUrl, depth + 1);
-      results.push(...children);
+      try {
+        const children = await fetchSitemapUrls(childUrl, depth + 1);
+        results.push(...children);
+      } catch (err) {
+        console.warn(`[sitemap] skipping child sitemap ${childUrl}: ${(err as Error).message}`);
+      }
     }
     return results;
   }
