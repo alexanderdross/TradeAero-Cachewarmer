@@ -29,12 +29,15 @@ function extractFromIndex(obj: ParsedXml): string[] {
  */
 export async function fetchSitemapUrls(
   sitemapUrl: string,
-  depth = 0
+  depth = 0,
+  indexOrigin?: string
 ): Promise<string[]> {
   if (depth > 4) {
     console.warn(`[sitemap] max recursion depth reached at ${sitemapUrl}`);
     return [];
   }
+
+  const origin = new URL(sitemapUrl).origin;
 
   const res = await axios.get<string>(sitemapUrl, {
     timeout: 30_000,
@@ -48,13 +51,23 @@ export async function fetchSitemapUrls(
   if (parsed['sitemapindex']) {
     const childUrls = extractFromIndex(parsed);
     const results: string[] = [];
-    for (const childUrl of childUrls) {
-      const children = await fetchSitemapUrls(childUrl, depth + 1);
-      results.push(...children);
+    for (let childUrl of childUrls) {
+      // If child URL uses a different domain than the index, try rewriting to the index's origin first
+      const childOrigin = new URL(childUrl).origin;
+      if (childOrigin !== origin) {
+        childUrl = childUrl.replace(childOrigin, origin);
+        console.log(`[sitemap] rewrote child URL domain: ${childOrigin} → ${origin}`);
+      }
+      try {
+        const children = await fetchSitemapUrls(childUrl, depth + 1, origin);
+        results.push(...children);
+      } catch (err) {
+        console.warn(`[sitemap] skipping child sitemap ${childUrl}: ${(err as Error).message}`);
+      }
     }
     return results;
   }
 
-  // Standard urlset
+  // Standard urlset — return URLs as-is (page URLs keep their original domain)
   return extractFromUrlset(parsed);
 }
