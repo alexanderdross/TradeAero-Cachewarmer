@@ -54,15 +54,14 @@ jobs:
           fi
 
           echo "Submitting job (body: $BODY)"
-          RESPONSE=$(curl -sf -w "\n%{http_code}" \
+          HTTP_CODE=$(curl -s -o /tmp/response.json -w "%{http_code}" \
             -X POST "$CACHEWARMER_URL/api/jobs" \
             -H "Content-Type: application/json" \
-            -H "X-API-Key: $CACHEWARMER_API_KEY" \
+            -H "x-api-key: $CACHEWARMER_API_KEY" \
             -d "$BODY")
 
-          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-          RESULT=$(echo "$RESPONSE" | head -n-1)
+          RESULT=$(cat /tmp/response.json)
           echo "HTTP $HTTP_CODE"
-          echo "$RESULT"
+          echo "Response: $RESULT"
 
-          [ "$HTTP_CODE" = "200" ] || (echo "::error::Job submission failed (HTTP $HTTP_CODE)" && exit 1)
+          [ "$HTTP_CODE" = "200" ] || (echo "::error::Job submission failed (HTTP $HTTP_CODE): $RESULT" && exit 1)
