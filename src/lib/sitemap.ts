@@ -25,12 +25,37 @@ function extractFromIndex(obj: ParsedXml): string[] {
 
 /**
  * Fetch and parse a sitemap XML URL, recursively resolving sitemap indexes.
- * Returns a flat array of page URLs.
+ * Returns a flat array of page URLs, de-duplicated so each URL is warmed /
+ * submitted at most once per run.
+ *
+ * De-duplication matters because TradeAero now publishes dedicated image
+ * sitemaps (`sitemap-images-<section>.xml`) alongside the combined
+ * `sitemap-<section>.xml`. Both reference the same page `<loc>` values —
+ * the image sitemap just carries extra `<image:image>` blocks that this
+ * parser ignores. Without a `Set()` guard every page URL would be warmed
+ * twice and every social/search channel submission would double-fire,
+ * wasting API budget (Google Indexing API: 200 URL notifications/day).
  */
 export async function fetchSitemapUrls(
   sitemapUrl: string,
   depth = 0,
   indexOrigin?: string
+): Promise<string[]> {
+  const seen = new Set<string>();
+  for (const url of await collectSitemapUrls(sitemapUrl, depth, indexOrigin)) {
+    seen.add(url);
+  }
+  return Array.from(seen);
+}
+
+/**
+ * Internal recursive walker. Returns every `<loc>` seen during the walk
+ * without de-duplicating — `fetchSitemapUrls()` above applies the Set.
+ */
+async function collectSitemapUrls(
+  sitemapUrl: string,
+  depth: number,
+  indexOrigin: string | undefined,
 ): Promise<string[]> {
   if (depth > 4) {
     console.warn(`[sitemap] max recursion depth reached at ${sitemapUrl}`);
@@ -59,7 +84,7 @@ export async function fetchSitemapUrls(
         console.log(`[sitemap] rewrote child URL domain: ${childOrigin} → ${origin}`);
       }
       try {
-        const children = await fetchSitemapUrls(childUrl, depth + 1, origin);
+        const children = await collectSitemapUrls(childUrl, depth + 1, origin);
         results.push(...children);
       } catch (err) {
         console.warn(`[sitemap] skipping child sitemap ${childUrl}: ${(err as Error).message}`);
