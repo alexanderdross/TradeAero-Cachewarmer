@@ -62,11 +62,23 @@ async function collectSitemapUrls(
 
   const origin = new URL(sitemapUrl).origin;
 
-  const res = await axios.get<string>(sitemapUrl, {
-    timeout: 30_000,
-    headers: { 'User-Agent': 'TradeAero-CacheWarmer/1.0' },
-    responseType: 'text',
-  });
+  let res;
+  try {
+    res = await axios.get<string>(sitemapUrl, {
+      timeout: 30_000,
+      headers: { 'User-Agent': 'TradeAero-CacheWarmer/1.0' },
+      responseType: 'text',
+    });
+  } catch (err) {
+    // A 404 on the sitemap is the normal state on trade.aero while the
+    // pre-prod gate is on (src/app/2d6a9a/**/route.ts short-circuits to
+    // 404 when PREPROD_GATE_ENABLED=true). Treat any fetch failure as an
+    // empty sitemap so /api/cron/warm returns `{skipped: "sitemap_empty"}`
+    // instead of erroring out.
+    const status = (err as { response?: { status?: number } }).response?.status;
+    console.warn(`[sitemap] fetch failed for ${sitemapUrl} (status=${status ?? "n/a"}): treating as empty`);
+    return [];
+  }
 
   const parsed = parser.parse(res.data) as ParsedXml;
 
