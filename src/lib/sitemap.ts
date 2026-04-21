@@ -39,10 +39,9 @@ function extractFromIndex(obj: ParsedXml): string[] {
 export async function fetchSitemapUrls(
   sitemapUrl: string,
   depth = 0,
-  indexOrigin?: string
 ): Promise<string[]> {
   const seen = new Set<string>();
-  for (const url of await collectSitemapUrls(sitemapUrl, depth, indexOrigin)) {
+  for (const url of await collectSitemapUrls(sitemapUrl, depth)) {
     seen.add(url);
   }
   return Array.from(seen);
@@ -55,7 +54,6 @@ export async function fetchSitemapUrls(
 async function collectSitemapUrls(
   sitemapUrl: string,
   depth: number,
-  indexOrigin: string | undefined,
 ): Promise<string[]> {
   if (depth > 4) {
     console.warn(`[sitemap] max recursion depth reached at ${sitemapUrl}`);
@@ -84,7 +82,7 @@ async function collectSitemapUrls(
         console.log(`[sitemap] rewrote child URL domain: ${childOrigin} → ${origin}`);
       }
       try {
-        const children = await collectSitemapUrls(childUrl, depth + 1, origin);
+        const children = await collectSitemapUrls(childUrl, depth + 1);
         results.push(...children);
       } catch (err) {
         console.warn(`[sitemap] skipping child sitemap ${childUrl}: ${(err as Error).message}`);
