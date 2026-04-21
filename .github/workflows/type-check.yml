@@ -10,9 +10,6 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# npm install (not npm ci) because this PR adds new devDeps (vitest, eslint,
-# etc.) and the committed package-lock.json has not been regenerated yet.
-# Switch back to `npm ci` once the lockfile lands on main.
 jobs:
   lint:
     name: Lint (ESLint)
@@ -22,7 +19,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
+          cache: npm
+      - run: npm ci
       - run: npm run lint
 
   test:
@@ -33,7 +31,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
+          cache: npm
+      - run: npm ci
       - run: npm test
 
   typecheck:
@@ -44,5 +43,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
+          cache: npm
+      - run: npm ci
       - run: npm run type-check
