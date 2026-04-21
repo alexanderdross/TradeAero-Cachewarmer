@@ -4,7 +4,6 @@ export type ChannelName = 'cdn' | 'cloudflare' | 'vercel' | 'facebook' | 'linked
 
 export interface ChannelEntry {
   enabled: boolean;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   config: Record<string, any>;
 }
 
