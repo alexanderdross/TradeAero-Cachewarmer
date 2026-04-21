@@ -18,6 +18,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ skipped: true, reason: 'cachewarmer_disabled' });
   }
 
+  // fetchSitemapUrls() now returns [] when the sitemap root is unreachable
+  // (e.g. gated trade.aero returns 404), so this branch doubles as the
+  // pre-prod kill switch without needing a separate env flag here.
   const urls = await fetchSitemapUrls(config.sitemapUrl);
   if (!urls.length) {
     return NextResponse.json({ skipped: true, reason: 'sitemap_empty', sitemapUrl: config.sitemapUrl });
