@@ -9,7 +9,10 @@ export interface Run {
   urls_total: number;
   urls_success: number;
   urls_failed: number;
-  triggered_by: 'cron' | 'manual';
+  // 'validation_only' = pre-warm validator was run standalone, no channels
+  // were called. Validation rows in cachewarmer_validation_results are still
+  // populated; channel_results stays null.
+  triggered_by: 'cron' | 'manual' | 'validation_only';
   status: 'running' | 'done' | 'failed';
   started_at?: string;
   finished_at?: string;
