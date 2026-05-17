@@ -46,3 +46,19 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run type-check
+
+  build:
+    name: Build (next build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # `next build` catches issues that typecheck misses — route collisions,
+      # invalid next.config.ts, breaking framework API changes. Runs without
+      # any runtime env vars (the service is API-only; no static generation
+      # touches Supabase at build time).
+      - run: npm run build
