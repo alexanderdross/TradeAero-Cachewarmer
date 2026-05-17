@@ -62,3 +62,21 @@ jobs:
       # any runtime env vars (the service is API-only; no static generation
       # touches Supabase at build time).
       - run: npm run build
+
+  audit:
+    name: Dependency audit (npm audit)
+    runs-on: ubuntu-latest
+    # `npm audit` doesn't need a node_modules install — runs against the
+    # lockfile directly. Keep it standalone so it doesn't pad the other
+    # jobs' minutes.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Gate at `critical` for the initial rollout — the lockfile carries
+      # an existing high-severity backlog (axios, next) that Dependabot's
+      # weekly PRs (see .github/dependabot.yml) will clear over time.
+      # Tighten to `--audit-level=high` once the backlog is empty so
+      # newly-introduced high CVEs block merge.
+      - run: npm audit --audit-level=critical
