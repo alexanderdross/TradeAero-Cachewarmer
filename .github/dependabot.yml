@@ -32,6 +32,17 @@ updates:
         update-types:
           - minor
           - patch
+    # ESLint v10 fans out across @eslint/js + eslint + the typescript-eslint
+    # ecosystem; bumping any one of them solo always ERESOLVEs against the
+    # others until the whole stack catches up. We hit this on Dependabot
+    # PR #26 (@eslint/js 10.0.1, Vercel build ERESOLVE). Defer the major
+    # bumps until typescript-eslint ships a v10-compatible release; lift
+    # the ignore once the lockfile can resolve them together.
+    ignore:
+      - dependency-name: eslint
+        update-types: [version-update:semver-major]
+      - dependency-name: "@eslint/js"
+        update-types: [version-update:semver-major]
     commit-message:
       prefix: chore(deps)
       prefix-development: chore(dev-deps)
