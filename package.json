@@ -13,10 +13,10 @@
   },
   "dependencies": {
     "next": "^15.2.4",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "@supabase/supabase-js": "^2.49.4",
-    "axios": "^1.7.9",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "@supabase/supabase-js": "^2.105.4",
+    "axios": "^1.16.1",
     "fast-xml-parser": "^4.5.0",
     "google-auth-library": "^9.15.0",
     "p-limit": "^5.0.0"
