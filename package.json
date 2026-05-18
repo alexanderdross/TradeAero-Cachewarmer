@@ -17,7 +17,7 @@
     "react-dom": "^19.2.6",
     "@supabase/supabase-js": "^2.105.4",
     "axios": "^1.16.1",
-    "fast-xml-parser": "^4.5.0",
+    "fast-xml-parser": "^5.8.0",
     "google-auth-library": "^10.6.2",
     "p-limit": "^5.0.0"
   },
