@@ -6,6 +6,9 @@ credentials/
 dist/
 .next/
 
+# Test coverage
+coverage/
+
 # Dependencies
 node_modules/
 

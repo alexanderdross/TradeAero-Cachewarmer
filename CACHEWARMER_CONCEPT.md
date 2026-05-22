@@ -42,7 +42,7 @@ After a successful warm run the service optionally dispatches the `index-listing
 ```
 
 **Technology stack:**
-- Next.js 15, TypeScript, deployed on Vercel
+- Next.js 16, TypeScript, deployed on Vercel
 - Axios for all HTTP channel calls
 - Supabase (PostgreSQL) for run history and admin config storage
 - No Redis, no BullMQ, no Puppeteer — lightweight synchronous execution
