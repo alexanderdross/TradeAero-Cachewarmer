@@ -22,14 +22,19 @@ export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
 
 /**
- * Number of URLs processed per batch within a single cron invocation.
+ * URLs processed per batch. Deliberately small: the time-budget check
+ * runs only BETWEEN batches, so a single batch must finish well under
+ * `maxDuration` even in the worst case — every URL hanging to a channel's
+ * 30s fetch timeout at concurrency 3 (~8 URLs ≈ 90s of warming + ~30s of
+ * validation ≈ 120s). A larger batch is what produced the 504s.
  */
-const BATCH = 500;
+const BATCH = 8;
 /**
- * Soft wall-clock budget for one invocation. Generously under `maxDuration`
- * so the final `updateRun` always lands before Vercel kills the function.
+ * Wall-clock budget for one invocation. Must leave headroom for one more
+ * worst-case batch (~120s) plus the finalize write, all under the 300s
+ * `maxDuration` (150s budget + 120s batch ≈ 270s).
  */
-const BUDGET_MS = 230_000;
+const BUDGET_MS = 150_000;
 /**
  * Minimum gap between cron-driven warm runs. A manual trigger passes
  * `?force=1` to bypass this throttle.

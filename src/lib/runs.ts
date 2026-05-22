@@ -55,7 +55,7 @@ export async function updateRun(id: string, update: Partial<Run>): Promise<void>
  * Returns the number of rows reaped (best-effort; 0 if the count is absent).
  *
  * The default threshold (60 min) must stay well above the cron interval
- * (15 min) plus one invocation's max duration — otherwise a run that is
+ * (5 min) plus one invocation's max duration — otherwise a run that is
  * merely waiting for the next cron tick to resume it from its `cursor`
  * would be wrongly reaped as "dead", and long runs could never complete.
  */
