@@ -13,7 +13,10 @@ export function validateLocal(blocks: Record<string, unknown>[]): SchemaIssue[] 
   const issues: SchemaIssue[] = [];
 
   for (const block of blocks) {
-    issues.push(...validateNode(block));
+    // Element-by-element append — spreading into push() overflows the
+    // argument-count limit when a node yields a large issue array (e.g. a
+    // huge itemListElement). See validation/index.ts for the same fix.
+    for (const issue of validateNode(block)) issues.push(issue);
   }
 
   return issues;
@@ -62,7 +65,7 @@ function validateNode(node: Record<string, unknown>, typeOverride?: string): Sch
     const rule = TYPE_RULES[t];
     if (!rule) continue; // Unknown type — silently skip; not all types are governed.
 
-    issues.push(...checkRule(node, t, rule));
+    for (const issue of checkRule(node, t, rule)) issues.push(issue);
   }
 
   return issues;
