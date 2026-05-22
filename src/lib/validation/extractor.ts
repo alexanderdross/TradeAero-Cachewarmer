@@ -65,9 +65,21 @@ export async function fetchAndExtractJsonLd(
   return { httpStatus: res.status, blocks, parseErrors };
 }
 
-function flattenJsonLd(node: unknown): Record<string, unknown>[] {
+// Deeply-nested @graph chains are almost always malformed or hostile;
+// a finite cap stops a pathological page from blowing the stack.
+export const MAX_GRAPH_DEPTH = 64;
+
+/**
+ * Flatten a parsed JSON-LD value into a list of schema.org nodes,
+ * expanding nested `@graph` arrays. Exported for unit testing.
+ */
+export function flattenJsonLd(
+  node: unknown,
+  depth = 0,
+): Record<string, unknown>[] {
+  if (depth > MAX_GRAPH_DEPTH) return [];
   if (Array.isArray(node)) {
-    return node.flatMap((n) => flattenJsonLd(n));
+    return node.flatMap((n) => flattenJsonLd(n, depth + 1));
   }
   if (node && typeof node === 'object') {
     const obj = node as Record<string, unknown>;
@@ -76,9 +88,16 @@ function flattenJsonLd(node: unknown): Record<string, unknown>[] {
       // Keep the wrapper too if it has its own @type — pages that wrap a
       // single Organization around a @graph of pages still want the wrapper
       // validated.
-      const out = obj['@type'] ? [obj] : [];
+      const out: Record<string, unknown>[] = obj['@type'] ? [obj] : [];
       for (const child of graph) {
-        out.push(...flattenJsonLd(child));
+        // Append element-by-element. `out.push(...flattenJsonLd(child))`
+        // spreads the child array into push()'s arguments, and a large
+        // enough (or deeply nested) @graph overflows the engine's
+        // argument-count limit — surfacing as the RangeError
+        // "Maximum call stack size exceeded".
+        for (const flattened of flattenJsonLd(child, depth + 1)) {
+          out.push(flattened);
+        }
       }
       return out;
     }
