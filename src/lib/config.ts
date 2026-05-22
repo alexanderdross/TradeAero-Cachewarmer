@@ -63,7 +63,7 @@ export async function loadServiceConfig(): Promise<ServiceConfig> {
     orchestration,
     validation: {
       enabled: getSetting('validation_enabled', true),
-      concurrency: getNumberSetting('validation_concurrency', 4),
+      concurrency: getNumberSetting('validation_concurrency', 8),
       useRemoteValidator: getSetting('validation_use_remote', false),
       fetchTimeoutMs: getNumberSetting('validation_fetch_timeout_ms', 15_000),
     },
