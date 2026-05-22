@@ -99,9 +99,14 @@ async function validateOneUrl(
       }
     }
 
-    issues.push(...validateLocal(blocks));
+    // Append element-by-element. `issues.push(...validateLocal(blocks))`
+    // spreads the result array into push()'s arguments, and a page with a
+    // large @graph produces enough issues to overflow the engine's
+    // argument-count limit — the RangeError "Maximum call stack size
+    // exceeded".
+    for (const issue of validateLocal(blocks)) issues.push(issue);
     if (options.useRemoteValidator && blocks.length > 0) {
-      issues.push(...(await validateRemote(blocks)));
+      for (const issue of await validateRemote(blocks)) issues.push(issue);
     }
   } catch (err) {
     issues.push({
