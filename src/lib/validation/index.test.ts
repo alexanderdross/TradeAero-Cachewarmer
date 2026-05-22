@@ -84,4 +84,23 @@ describe('validateUrlBatch', () => {
     expect(summary.errors).toBe(1);
     expect(summary.fetchFailed).toBe(1);
   });
+
+  it('handles a page with a huge @graph without overflowing the stack', async () => {
+    // A @graph of 200k incomplete Product nodes — each yields validation
+    // issues, so validateLocal() returns a very large issue array. Pre-fix
+    // `issues.push(...validateLocal(blocks))` spread that into push() and
+    // threw "Maximum call stack size exceeded".
+    const graph = Array.from({ length: 200_000 }, () => ({ '@type': 'Product' }));
+    const html = `<script type="application/ld+json">${JSON.stringify({
+      '@context': 'https://schema.org',
+      '@graph': graph,
+    })}</script>`;
+    mockedAxios.get.mockResolvedValue({ status: 200, data: html });
+
+    const summary = await validateUrlBatch(['https://trade.aero/big'], {
+      useRemoteValidator: false,
+    });
+    expect(summary.total).toBe(1);
+    expect(summary.reports[0].status).toBe('has_errors');
+  });
 });
