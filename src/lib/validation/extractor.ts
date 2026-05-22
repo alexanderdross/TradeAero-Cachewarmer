@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { assertAllowedUrl, MAX_REDIRECTS } from '../url-guard';
 
 export interface ExtractResult {
   httpStatus: number;
@@ -27,13 +28,15 @@ export async function fetchAndExtractJsonLd(
   url: string,
   timeoutMs = 15_000,
 ): Promise<ExtractResult> {
+  // SSRF guard: validated URLs derive from caller-supplied sitemap/url lists.
+  assertAllowedUrl(url);
   const res = await axios.get<string>(url, {
     timeout: timeoutMs,
     headers: {
       'User-Agent': 'TradeAero-CacheWarmer/1.0 (+structured-data-validator)',
       Accept: 'text/html,application/xhtml+xml',
     },
-    maxRedirects: 5,
+    maxRedirects: MAX_REDIRECTS,
     responseType: 'text',
     validateStatus: (s) => s < 500,
   });
