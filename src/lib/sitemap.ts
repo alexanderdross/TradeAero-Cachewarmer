@@ -37,7 +37,10 @@ function extractFromUrlset(obj: ParsedXml): string[] {
     const loc = String(e['loc'] ?? '').trim();
     if (loc) out.push(loc);
     // Multi-locale: collect <xhtml:link rel="alternate" hreflang=…> hrefs.
-    out.push(...extractAlternateHrefs(e));
+    // Append element-by-element — `out.push(...arr)` spreads the array into
+    // push()'s arguments and overflows the engine's argument-count limit
+    // once the array is large enough.
+    for (const href of extractAlternateHrefs(e)) out.push(href);
   }
   return out;
 }
@@ -149,7 +152,12 @@ async function collectSitemapUrls(
       // collectSitemapUrls treats fetch failures as empty, so a bad child
       // sitemap is skipped here without aborting its siblings.
       const children = await collectSitemapUrls(childUrl, depth + 1);
-      results.push(...children);
+      // Append element-by-element. `results.push(...children)` spreads the
+      // child array into push()'s arguments — a child sitemap shard yields
+      // thousands of page URLs × ~14 hreflang alternates, which overflows
+      // the engine's argument-count limit ("Maximum call stack size
+      // exceeded") and 500s the whole /api/cron/warm tick.
+      for (const u of children) results.push(u);
     }
     return results;
   }
