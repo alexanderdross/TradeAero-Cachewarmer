@@ -28,9 +28,10 @@ export async function POST(request: NextRequest) {
         ? `https://${process.env.VERCEL_URL}`
         : 'http://localhost:3001');
 
-  // Fire-and-forget: creates an independent Vercel function invocation that
-  // runs the full warm job. Errors are recorded in cachewarmer_runs.
-  void fetch(`${baseUrl}/api/cron/warm`, {
+  // Fire-and-forget: kicks the /api/cron/warm tick once. `?force=1` bypasses
+  // the MIN_RUN_INTERVAL_MS throttle so a manual trigger always starts (or
+  // resumes) a run. The run then advances on the regular cron schedule.
+  void fetch(`${baseUrl}/api/cron/warm?force=1`, {
     headers: { Authorization: `Bearer ${cronSecret}` },
   }).catch(() => {});
 

@@ -192,7 +192,7 @@ describe("POST /api/jobs/validate", () => {
     expect(res.status).toBe(503);
   });
 
-  it("200s for an allowlisted url list", async () => {
+  it("200s and enqueues a validation_only run", async () => {
     const res = await validatePOST(
       jobsRequest("POST", {
         body: { urls: ["https://trade.aero/page"] },
@@ -201,6 +201,9 @@ describe("POST /api/jobs/validate", () => {
     );
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.validation).toBeDefined();
+    // The route now only enqueues a run — the cron tick does the work.
+    expect(json.queued).toBe(true);
+    expect(json.runId).toBe("run-1");
+    expect(json.urlsTotal).toBe(1);
   });
 });
