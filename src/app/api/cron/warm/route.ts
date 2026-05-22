@@ -53,12 +53,18 @@ const MIN_RUN_INTERVAL_MS = 6 * 60 * 60 * 1000;
  *      stays `running` and the next cron tick picks up where it left off.
  *
  * No self-fetch / self-chaining — progress is purely cursor-based and the
- * 15-minute cron schedule is what advances long runs.
+ * cron schedule is what advances long runs.
  */
 export async function GET(request: NextRequest) {
   if (!verifyCronSecret(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+
+  // Start the wall-clock budget here — BEFORE the config load and sitemap
+  // fetch — so the per-batch budget check accounts for that startup cost
+  // (the sitemap walk alone can take tens of seconds) and the whole
+  // invocation stays under `maxDuration`.
+  const startedMs = Date.now();
 
   // Watchdog: free up any run whose invocation was killed mid-batch.
   await reapStaleRuns();
@@ -121,7 +127,6 @@ export async function GET(request: NextRequest) {
 
   // --- Process the active run in time-budgeted batches ------------------
   const validationOnly = active.triggered_by === 'validation_only';
-  const startedMs = Date.now();
 
   let cursor = active.cursor ?? 0;
   let urlsSuccess = active.urls_success;
@@ -175,6 +180,9 @@ export async function GET(request: NextRequest) {
       // single-shot pipeline never reached.
       const update: Partial<Run> = {
         cursor,
+        // Stamp urls_total — validation_only runs are enqueued by
+        // /api/jobs/validate with 0; the sitemap is resolved here.
+        urls_total: urls.length,
         urls_success: urlsSuccess,
         urls_failed: urlsFailed,
         validation_ok: vOk,

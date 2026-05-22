@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyApiKey } from '@/lib/auth';
 import { loadServiceConfig } from '@/lib/config';
-import { fetchSitemapUrls } from '@/lib/sitemap';
 import { createRun } from '@/lib/runs';
 import crypto from 'crypto';
 
@@ -14,14 +13,15 @@ export const maxDuration = 30;
  * POST /api/jobs/validate
  *
  * Enqueue a standalone schema.org JSON-LD validation run — no channel
- * warming. Same body shape as POST /api/jobs (`{ sitemapUrl?, urls? }`).
+ * warming. Body: `{ sitemapUrl? }` (defaults to the configured sitemap).
  *
  * Creates a `cachewarmer_runs` row with `triggered_by: 'validation_only'`
  * and `status: 'running'`, then returns immediately. The /api/cron/warm
- * cron tick picks the run up and processes it in resumable, cursor-based
- * batches (writing per-URL rows into `cachewarmer_validation_results`).
- * This avoids the old bug where 51k URLs were validated inline in a single
- * invocation that Vercel killed before any progress was written.
+ * cron tick picks the run up, resolves the sitemap, and processes it in
+ * resumable, cursor-based batches (writing per-URL rows into
+ * `cachewarmer_validation_results`). The sitemap is intentionally NOT
+ * resolved here — walking ~20 shards inline would exceed this route's
+ * short maxDuration and 504.
  *
  * The existing admin dialog and CSV/JSON export pipelines work unchanged —
  * the run shows up in history with a "validation_only" label and null
@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let body: { sitemapUrl?: string; urls?: string[] } = {};
+  let body: { sitemapUrl?: string } = {};
   try {
     body = await request.json();
   } catch {
@@ -49,20 +49,16 @@ export async function POST(request: NextRequest) {
     }
 
     const sitemapUrl = body.sitemapUrl ?? config.sitemapUrl;
-    let urls: string[] = body.urls ?? [];
 
-    if (!urls.length) {
-      urls = await fetchSitemapUrls(sitemapUrl);
-    }
-    if (!urls.length) {
-      return NextResponse.json({ error: 'No URLs found in sitemap' }, { status: 400 });
-    }
-
-    const jobId = crypto.randomUUID();
+    // Enqueue only — do NOT resolve the sitemap here. fetchSitemapUrls()
+    // walks ~20 sitemap shards (index + chunked children, each with its own
+    // fetch timeout) and would blow this route's short maxDuration,
+    // returning a 504. The /api/cron/warm tick resolves the sitemap under
+    // its full 300s budget and stamps urls_total on first pickup.
     const runId = await createRun({
-      job_id: jobId,
+      job_id: crypto.randomUUID(),
       sitemap_url: sitemapUrl,
-      urls_total: urls.length,
+      urls_total: 0,
       urls_success: 0,
       urls_failed: 0,
       cursor: 0,
@@ -70,7 +66,7 @@ export async function POST(request: NextRequest) {
       status: 'running',
     });
 
-    return NextResponse.json({ jobId, runId, urlsTotal: urls.length, queued: true });
+    return NextResponse.json({ runId, queued: true });
   } catch (err) {
     const message = (err as Error).message ?? String(err);
     return NextResponse.json({ error: message }, { status: 500 });

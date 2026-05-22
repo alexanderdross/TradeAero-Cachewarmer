@@ -194,16 +194,14 @@ describe("POST /api/jobs/validate", () => {
 
   it("200s and enqueues a validation_only run", async () => {
     const res = await validatePOST(
-      jobsRequest("POST", {
-        body: { urls: ["https://trade.aero/page"] },
-        path: "/api/jobs/validate",
-      }),
+      jobsRequest("POST", { body: {}, path: "/api/jobs/validate" }),
     );
     expect(res.status).toBe(200);
     const json = await res.json();
-    // The route now only enqueues a run — the cron tick does the work.
+    // The route only enqueues a run — it does NOT resolve the sitemap
+    // (that would 504); the /api/cron/warm tick resolves it and does the
+    // work, so there is no urlsTotal in the response.
     expect(json.queued).toBe(true);
     expect(json.runId).toBe("run-1");
-    expect(json.urlsTotal).toBe(1);
   });
 });
