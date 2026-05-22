@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import axios from 'axios';
-import { fetchAndExtractJsonLd } from './extractor';
+import {
+  fetchAndExtractJsonLd,
+  flattenJsonLd,
+  MAX_GRAPH_DEPTH,
+} from './extractor';
 
 vi.mock('axios');
 const mockedAxios = axios as unknown as { get: ReturnType<typeof vi.fn> };
@@ -75,5 +79,29 @@ describe('fetchAndExtractJsonLd', () => {
     const out = await fetchAndExtractJsonLd('https://trade.aero/missing');
     expect(out.httpStatus).toBe(404);
     expect(out.blocks).toHaveLength(0);
+  });
+});
+
+describe('flattenJsonLd', () => {
+  it('flattens a large nested @graph without overflowing the stack', () => {
+    // A @graph whose single child is itself a large @graph. Pre-fix this
+    // threw "Maximum call stack size exceeded" because the inner result
+    // was spread into out.push(...).
+    const inner = Array.from({ length: 150_000 }, (_, i) => ({
+      '@type': 'ListItem',
+      position: i + 1,
+    }));
+    const doc = { '@graph': [{ '@graph': inner }] };
+    const out = flattenJsonLd(doc);
+    expect(out).toHaveLength(150_000);
+  });
+
+  it('caps recursion on a pathologically nested @graph chain', () => {
+    let nested: Record<string, unknown> = { '@type': 'Thing', name: 'leaf' };
+    for (let i = 0; i < MAX_GRAPH_DEPTH + 50; i++) {
+      nested = { '@graph': [nested] };
+    }
+    // Must not throw; nodes deeper than the cap are simply dropped.
+    expect(() => flattenJsonLd(nested)).not.toThrow();
   });
 });
