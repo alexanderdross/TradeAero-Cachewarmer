@@ -3,77 +3,223 @@ import { verifyCronSecret } from '@/lib/auth';
 import { loadServiceConfig } from '@/lib/config';
 import { fetchSitemapUrls } from '@/lib/sitemap';
 import { runAllChannels } from '@/lib/channels';
-import { createRun, updateRun, persistValidationResults } from '@/lib/runs';
+import {
+  createRun,
+  updateRun,
+  insertValidationReports,
+  reapStaleRuns,
+  findOldestRunningRun,
+  findLatestFinishedRun,
+  getRun,
+  type Run,
+} from '@/lib/runs';
 import { triggerIndexing } from '@/lib/orchestration';
 import { validateUrlBatch } from '@/lib/validation';
+import type { ChannelResult } from '@/lib/channels/types';
 import crypto from 'crypto';
 
 export const maxDuration = 300;
+export const dynamic = 'force-dynamic';
 
+/**
+ * Number of URLs processed per batch within a single cron invocation.
+ */
+const BATCH = 500;
+/**
+ * Soft wall-clock budget for one invocation. Generously under `maxDuration`
+ * so the final `updateRun` always lands before Vercel kills the function.
+ */
+const BUDGET_MS = 230_000;
+/**
+ * Minimum gap between cron-driven warm runs. A manual trigger passes
+ * `?force=1` to bypass this throttle.
+ */
+const MIN_RUN_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * GET /api/cron/warm
+ *
+ * Cron-tick-driven, resumable warm pipeline. Each invocation:
+ *   1. Reaps stale (killed mid-batch) runs via the heartbeat watchdog.
+ *   2. Resumes the oldest in-progress run from its `cursor`, OR — when none
+ *      is in progress and the throttle allows — starts a fresh warm run.
+ *   3. Processes URLs in time-budgeted batches, persisting `cursor` +
+ *      accumulated counts after every batch. If the budget runs out the run
+ *      stays `running` and the next cron tick picks up where it left off.
+ *
+ * No self-fetch / self-chaining — progress is purely cursor-based and the
+ * 15-minute cron schedule is what advances long runs.
+ */
 export async function GET(request: NextRequest) {
-  if (!verifyCronSecret(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!verifyCronSecret(request)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  // Watchdog: free up any run whose invocation was killed mid-batch.
+  await reapStaleRuns();
 
   const config = await loadServiceConfig();
+  const forced = request.nextUrl.searchParams.get('force') === '1';
 
-  if (!config.cachwarmerEnabled) {
-    return NextResponse.json({ skipped: true, reason: 'cachewarmer_disabled' });
-  }
+  // --- Determine the run to work on -------------------------------------
+  let active = await findOldestRunningRun();
+  let urls: string[];
 
-  // fetchSitemapUrls() now returns [] when the sitemap root is unreachable
-  // (e.g. gated trade.aero returns 404), so this branch doubles as the
-  // pre-prod kill switch without needing a separate env flag here.
-  const urls = await fetchSitemapUrls(config.sitemapUrl);
-  if (!urls.length) {
-    return NextResponse.json({ skipped: true, reason: 'sitemap_empty', sitemapUrl: config.sitemapUrl });
-  }
-
-  const jobId = crypto.randomUUID();
-  const runId = await createRun({
-    job_id: jobId,
-    sitemap_url: config.sitemapUrl,
-    urls_total: urls.length,
-    urls_success: 0,
-    urls_failed: 0,
-    triggered_by: 'cron',
-    status: 'running',
-  });
-
-  try {
-    // Pre-warm schema-markup validation gate. Warn-only: every URL is still
-    // warmed regardless of validation outcome — see /api/jobs/[id]/validation
-    // for the per-URL report surfaced in the admin dashboard.
-    if (config.validation.enabled) {
-      try {
-        const summary = await validateUrlBatch(urls, {
-          concurrency: config.validation.concurrency,
-          useRemoteValidator: config.validation.useRemoteValidator,
-          fetchTimeoutMs: config.validation.fetchTimeoutMs,
-        });
-        await persistValidationResults(runId, summary);
-      } catch (err) {
-        console.warn(`[validation] non-fatal: ${(err as Error).message}`);
+  if (!active) {
+    // No in-progress run. Decide whether to start a fresh warm run. A
+    // validation_only run is always created by /api/jobs/validate, never
+    // here, so the cachewarmer-disabled gate applies cleanly to fresh runs.
+    if (!forced) {
+      const latest = await findLatestFinishedRun();
+      if (
+        latest?.finished_at &&
+        Date.now() - new Date(latest.finished_at).getTime() < MIN_RUN_INTERVAL_MS
+      ) {
+        return NextResponse.json({ skipped: true, reason: 'recently_warmed' });
       }
     }
 
-    const channelResults = await runAllChannels(urls, config.channels);
-    const totalSuccess = Object.values(channelResults).reduce((s, r) => s + r.success, 0);
-    const totalFailed = Object.values(channelResults).reduce((s, r) => s + r.failed, 0);
-
-    await updateRun(runId, {
-      status: 'done',
-      finished_at: new Date().toISOString(),
-      urls_success: totalSuccess,
-      urls_failed: totalFailed,
-      channel_results: channelResults,
-    });
-
-    if (config.orchestration.enabled && config.indexingEnabled) {
-      try { await triggerIndexing(); } catch { /* non-fatal */ }
+    if (!config.cachwarmerEnabled) {
+      return NextResponse.json({ skipped: true, reason: 'cachewarmer_disabled' });
     }
 
-    return NextResponse.json({ jobId, runId, urlsTotal: urls.length, channelResults });
+    urls = await fetchSitemapUrls(config.sitemapUrl);
+    if (!urls.length) {
+      return NextResponse.json({
+        skipped: true,
+        reason: 'sitemap_empty',
+        sitemapUrl: config.sitemapUrl,
+      });
+    }
+
+    const runId = await createRun({
+      job_id: crypto.randomUUID(),
+      sitemap_url: config.sitemapUrl,
+      urls_total: urls.length,
+      urls_success: 0,
+      urls_failed: 0,
+      cursor: 0,
+      triggered_by: forced ? 'manual' : 'cron',
+      status: 'running',
+    });
+
+    const fresh = await getRun(runId);
+    if (!fresh) {
+      return NextResponse.json({ error: 'failed to load freshly created run' }, { status: 500 });
+    }
+    active = fresh;
+  } else {
+    // Resuming an existing run — re-fetch its sitemap. The sitemap is stable
+    // over the lifetime of a run, so re-fetching per invocation is fine.
+    urls = await fetchSitemapUrls(active.sitemap_url ?? config.sitemapUrl);
+  }
+
+  // --- Process the active run in time-budgeted batches ------------------
+  const validationOnly = active.triggered_by === 'validation_only';
+  const startedMs = Date.now();
+
+  let cursor = active.cursor ?? 0;
+  let urlsSuccess = active.urls_success;
+  let urlsFailed = active.urls_failed;
+  const channelResults: Record<string, ChannelResult> = { ...(active.channel_results ?? {}) };
+  let vOk = active.validation_ok ?? 0;
+  let vWarn = active.validation_warnings ?? 0;
+  let vErr = active.validation_errors ?? 0;
+  let vFail = active.validation_fetch_failed ?? 0;
+
+  try {
+    while (cursor < urls.length) {
+      const slice = urls.slice(cursor, cursor + BATCH);
+
+      // Pre-warm schema-markup validation. Always run it for validation_only
+      // runs; gate it behind validation.enabled for warm runs. Warn-only —
+      // a validation failure never aborts the batch.
+      if (validationOnly || config.validation.enabled) {
+        try {
+          const summary = await validateUrlBatch(slice, {
+            concurrency: config.validation.concurrency,
+            useRemoteValidator: config.validation.useRemoteValidator,
+            fetchTimeoutMs: config.validation.fetchTimeoutMs,
+          });
+          await insertValidationReports(active.id!, summary);
+          vOk += summary.ok;
+          vWarn += summary.warningsOnly;
+          vErr += summary.errors;
+          vFail += summary.fetchFailed;
+        } catch (err) {
+          console.warn(`[validation] non-fatal: ${(err as Error).message}`);
+        }
+      }
+
+      if (!validationOnly) {
+        const cr = await runAllChannels(slice, config.channels);
+        for (const [name, result] of Object.entries(cr)) {
+          const prev = channelResults[name] ?? { success: 0, failed: 0 };
+          channelResults[name] = {
+            success: prev.success + result.success,
+            failed: prev.failed + result.failed,
+          };
+        }
+        urlsSuccess += Object.values(cr).reduce((s, r) => s + r.success, 0);
+        urlsFailed += Object.values(cr).reduce((s, r) => s + r.failed, 0);
+      }
+
+      cursor += slice.length;
+
+      // Persist progress after every batch — this is the write that the old
+      // single-shot pipeline never reached.
+      const update: Partial<Run> = {
+        cursor,
+        urls_success: urlsSuccess,
+        urls_failed: urlsFailed,
+        validation_ok: vOk,
+        validation_warnings: vWarn,
+        validation_errors: vErr,
+        validation_fetch_failed: vFail,
+        heartbeat_at: new Date().toISOString(),
+      };
+      // Never send channel_results for a validation_only run — passing
+      // `undefined` could blank the column.
+      if (!validationOnly) update.channel_results = channelResults;
+      await updateRun(active.id!, update);
+
+      if (Date.now() - startedMs > BUDGET_MS) break;
+    }
+
+    const done = cursor >= urls.length;
+
+    if (done) {
+      await updateRun(active.id!, {
+        status: 'done',
+        finished_at: new Date().toISOString(),
+        urls_success: urlsSuccess,
+        urls_failed: urlsFailed,
+      });
+
+      if (
+        !validationOnly &&
+        config.orchestration.enabled &&
+        config.indexingEnabled
+      ) {
+        try {
+          await triggerIndexing();
+        } catch {
+          /* non-fatal */
+        }
+      }
+    }
+
+    return NextResponse.json({
+      runId: active.id,
+      cursor,
+      urlsTotal: urls.length,
+      done,
+    });
   } catch (err) {
-    await updateRun(runId, { status: 'failed', finished_at: new Date().toISOString() });
+    await updateRun(active.id!, {
+      status: 'failed',
+      finished_at: new Date().toISOString(),
+    }).catch(() => {});
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });
   }
 }

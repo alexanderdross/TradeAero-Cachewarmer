@@ -2,30 +2,30 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyApiKey } from '@/lib/auth';
 import { loadServiceConfig } from '@/lib/config';
 import { fetchSitemapUrls } from '@/lib/sitemap';
-import { createRun, updateRun, persistValidationResults } from '@/lib/runs';
-import { validateUrlBatch } from '@/lib/validation';
+import { createRun } from '@/lib/runs';
 import crypto from 'crypto';
 
-export const maxDuration = 300;
+// This route only enqueues a run row — the heavy validation work is done in
+// time-budgeted batches by the /api/cron/warm tick — so it needs no long
+// serverless budget.
+export const maxDuration = 30;
 
 /**
  * POST /api/jobs/validate
  *
- * Run the schema.org JSON-LD validator standalone — without warming any
- * channels. Same body shape as POST /api/jobs (`{ sitemapUrl?, urls? }`).
+ * Enqueue a standalone schema.org JSON-LD validation run — no channel
+ * warming. Same body shape as POST /api/jobs (`{ sitemapUrl?, urls? }`).
  *
- * Persists a `cachewarmer_runs` row with `triggered_by: 'validation_only'`
- * plus per-URL rows in `cachewarmer_validation_results`. The existing admin
- * dialog and CSV/JSON export pipelines work unchanged — the run just shows
- * up in the history list with a distinctive "validation_only" label and
- * null channel_results.
+ * Creates a `cachewarmer_runs` row with `triggered_by: 'validation_only'`
+ * and `status: 'running'`, then returns immediately. The /api/cron/warm
+ * cron tick picks the run up and processes it in resumable, cursor-based
+ * batches (writing per-URL rows into `cachewarmer_validation_results`).
+ * This avoids the old bug where 51k URLs were validated inline in a single
+ * invocation that Vercel killed before any progress was written.
  *
- * Use cases:
- *   - Spot-check JSON-LD changes after editing a builder under
- *     src/lib/seo/* or src/components/aircraft/AircraftJsonLd.tsx, without
- *     burning Vercel CPU on cache warming or triggering social/search
- *     channel submissions.
- *   - Validate ad-hoc URL lists from the admin UI on demand.
+ * The existing admin dialog and CSV/JSON export pipelines work unchanged —
+ * the run shows up in history with a "validation_only" label and null
+ * channel_results.
  */
 export async function POST(request: NextRequest) {
   if (!verifyApiKey(request)) {
@@ -39,7 +39,6 @@ export async function POST(request: NextRequest) {
     /* empty body */
   }
 
-  let runId: string | undefined;
   try {
     const config = await loadServiceConfig();
     if (!config.validation.enabled) {
@@ -60,51 +59,20 @@ export async function POST(request: NextRequest) {
     }
 
     const jobId = crypto.randomUUID();
-    runId = await createRun({
+    const runId = await createRun({
       job_id: jobId,
       sitemap_url: sitemapUrl,
       urls_total: urls.length,
       urls_success: 0,
       urls_failed: 0,
+      cursor: 0,
       triggered_by: 'validation_only',
       status: 'running',
     });
 
-    const summary = await validateUrlBatch(urls, {
-      concurrency: config.validation.concurrency,
-      useRemoteValidator: config.validation.useRemoteValidator,
-      fetchTimeoutMs: config.validation.fetchTimeoutMs,
-    });
-    await persistValidationResults(runId, summary);
-
-    await updateRun(runId, {
-      status: 'done',
-      finished_at: new Date().toISOString(),
-      // Channel-warming wasn't attempted — record validation totals as the
-      // run's "success/failed" so the existing dashboard chart renders
-      // something meaningful for validation_only runs.
-      urls_success: summary.ok + summary.warningsOnly,
-      urls_failed: summary.errors + summary.fetchFailed,
-    });
-
-    return NextResponse.json({
-      jobId,
-      runId,
-      urlsTotal: urls.length,
-      validation: {
-        ok: summary.ok,
-        warnings: summary.warningsOnly,
-        errors: summary.errors,
-        fetchFailed: summary.fetchFailed,
-      },
-    });
+    return NextResponse.json({ jobId, runId, urlsTotal: urls.length, queued: true });
   } catch (err) {
     const message = (err as Error).message ?? String(err);
-    if (runId) {
-      await updateRun(runId, { status: 'failed', finished_at: new Date().toISOString() }).catch(
-        () => {},
-      );
-    }
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

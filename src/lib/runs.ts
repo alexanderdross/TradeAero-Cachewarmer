@@ -21,6 +21,10 @@ export interface Run {
   validation_warnings?: number | null;
   validation_errors?: number | null;
   validation_fetch_failed?: number | null;
+  /** Next URL index to process — drives resumable, chunked runs. */
+  cursor?: number;
+  /** Progress timestamp written every batch; used by the stale-run watchdog. */
+  heartbeat_at?: string;
 }
 
 export async function createRun(run: Omit<Run, 'id' | 'started_at'>): Promise<string> {
@@ -37,6 +41,72 @@ export async function createRun(run: Omit<Run, 'id' | 'started_at'>): Promise<st
 export async function updateRun(id: string, update: Partial<Run>): Promise<void> {
   const supabase = getSupabase();
   await supabase.from('cachewarmer_runs').update(update).eq('id', id);
+}
+
+/**
+ * Stale-run watchdog. A run whose serverless invocation was killed mid-batch
+ * stops updating `heartbeat_at`. This marks any such `running` row as failed
+ * so a fresh run can start and the dashboard stops showing a frozen run.
+ *
+ * Rows with a NULL `heartbeat_at` are intentionally NOT matched by `.lt(...)`
+ * — a freshly created run writes its first heartbeat on the first batch, so
+ * the only window where heartbeat is NULL is the first few seconds of a run.
+ *
+ * Returns the number of rows reaped (best-effort; 0 if the count is absent).
+ *
+ * The default threshold (60 min) must stay well above the cron interval
+ * (15 min) plus one invocation's max duration — otherwise a run that is
+ * merely waiting for the next cron tick to resume it from its `cursor`
+ * would be wrongly reaped as "dead", and long runs could never complete.
+ */
+export async function reapStaleRuns(staleMs = 3_600_000): Promise<number> {
+  const supabase = getSupabase();
+  const cutoff = new Date(Date.now() - staleMs).toISOString();
+  const { count, error } = await supabase
+    .from('cachewarmer_runs')
+    .update(
+      { status: 'failed', finished_at: new Date().toISOString() },
+      { count: 'exact' },
+    )
+    .eq('status', 'running')
+    .lt('heartbeat_at', cutoff);
+  if (error) {
+    console.warn(`[runs] reapStaleRuns failed: ${error.message}`);
+    return 0;
+  }
+  return count ?? 0;
+}
+
+/**
+ * The oldest still-`running` run, if any. The cron tick resumes this run
+ * from its `cursor` before considering whether to start a fresh run.
+ */
+export async function findOldestRunningRun(): Promise<Run | null> {
+  const supabase = getSupabase();
+  const { data } = await supabase
+    .from('cachewarmer_runs')
+    .select('*')
+    .eq('status', 'running')
+    .order('started_at', { ascending: true })
+    .limit(1);
+  const rows = (data ?? []) as Run[];
+  return rows[0] ?? null;
+}
+
+/**
+ * The most recently finished run (status `done` or `failed`). Used to throttle
+ * how often a fresh cron-driven warm run is started.
+ */
+export async function findLatestFinishedRun(): Promise<Run | null> {
+  const supabase = getSupabase();
+  const { data } = await supabase
+    .from('cachewarmer_runs')
+    .select('*')
+    .in('status', ['done', 'failed'])
+    .order('finished_at', { ascending: false })
+    .limit(1);
+  const rows = (data ?? []) as Run[];
+  return rows[0] ?? null;
 }
 
 export async function getRun(id: string): Promise<Run | null> {
@@ -57,13 +127,16 @@ export async function listRuns(page = 1, limit = 20) {
 }
 
 /**
- * Persist per-URL validation results for a run. Writes one row per URL into
- * `cachewarmer_validation_results` and updates the parent `cachewarmer_runs`
- * row with summary counts. Failures here are non-fatal — validation is a
- * warn-only observability layer, so we swallow DB errors and log instead of
- * blocking the warming pipeline.
+ * Insert the per-URL validation rows for a (batch of a) run into
+ * `cachewarmer_validation_results`. This is the chunked-INSERT half of the
+ * old `persistValidationResults` — it does NOT touch `cachewarmer_runs`, so
+ * the resumable cron pipeline can call it once per batch and own the
+ * accumulated summary counts itself via `updateRun`.
+ *
+ * Failures here are non-fatal — validation is a warn-only observability
+ * layer, so DB errors are swallowed and logged instead of blocking warming.
  */
-export async function persistValidationResults(
+export async function insertValidationReports(
   runId: string,
   summary: RunValidationSummary,
 ): Promise<void> {
@@ -82,19 +155,36 @@ export async function persistValidationResults(
     duration_ms: r.durationMs,
   }));
 
-  if (rows.length > 0) {
-    // Chunk to stay well under Supabase's request size limit for runs with
-    // tens of thousands of URLs.
-    const CHUNK = 500;
-    for (let i = 0; i < rows.length; i += CHUNK) {
-      const { error } = await supabase
-        .from('cachewarmer_validation_results')
-        .insert(rows.slice(i, i + CHUNK));
-      if (error) {
-        console.warn(`[validation] persist chunk ${i / CHUNK} failed: ${error.message}`);
-      }
+  if (rows.length === 0) return;
+
+  // Chunk to stay well under Supabase's request size limit for runs with
+  // tens of thousands of URLs.
+  const CHUNK = 500;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const { error } = await supabase
+      .from('cachewarmer_validation_results')
+      .insert(rows.slice(i, i + CHUNK));
+    if (error) {
+      console.warn(`[validation] persist chunk ${i / CHUNK} failed: ${error.message}`);
     }
   }
+}
+
+/**
+ * Persist per-URL validation results for a run. Writes one row per URL into
+ * `cachewarmer_validation_results` and updates the parent `cachewarmer_runs`
+ * row with summary counts. Failures here are non-fatal — validation is a
+ * warn-only observability layer, so we swallow DB errors and log instead of
+ * blocking the warming pipeline.
+ *
+ * Retained for any non-chunked caller; the resumable cron pipeline uses
+ * `insertValidationReports` plus its own accumulated `updateRun` instead.
+ */
+export async function persistValidationResults(
+  runId: string,
+  summary: RunValidationSummary,
+): Promise<void> {
+  await insertValidationReports(runId, summary);
 
   await updateRun(runId, {
     validation_ok: summary.ok,
