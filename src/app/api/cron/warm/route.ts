@@ -3,8 +3,9 @@ import { verifyCronSecret } from '@/lib/auth';
 import { loadServiceConfig } from '@/lib/config';
 import { fetchSitemapUrls } from '@/lib/sitemap';
 import { runAllChannels } from '@/lib/channels';
-import { createRun, updateRun } from '@/lib/runs';
+import { createRun, updateRun, persistValidationResults } from '@/lib/runs';
 import { triggerIndexing } from '@/lib/orchestration';
+import { validateUrlBatch } from '@/lib/validation';
 import crypto from 'crypto';
 
 export const maxDuration = 300;
@@ -38,6 +39,22 @@ export async function GET(request: NextRequest) {
   });
 
   try {
+    // Pre-warm schema-markup validation gate. Warn-only: every URL is still
+    // warmed regardless of validation outcome — see /api/jobs/[id]/validation
+    // for the per-URL report surfaced in the admin dashboard.
+    if (config.validation.enabled) {
+      try {
+        const summary = await validateUrlBatch(urls, {
+          concurrency: config.validation.concurrency,
+          useRemoteValidator: config.validation.useRemoteValidator,
+          fetchTimeoutMs: config.validation.fetchTimeoutMs,
+        });
+        await persistValidationResults(runId, summary);
+      } catch (err) {
+        console.warn(`[validation] non-fatal: ${(err as Error).message}`);
+      }
+    }
+
     const channelResults = await runAllChannels(urls, config.channels);
     const totalSuccess = Object.values(channelResults).reduce((s, r) => s + r.success, 0);
     const totalFailed = Object.values(channelResults).reduce((s, r) => s + r.failed, 0);

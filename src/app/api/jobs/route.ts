@@ -3,8 +3,9 @@ import { verifyApiKey } from '@/lib/auth';
 import { loadServiceConfig } from '@/lib/config';
 import { fetchSitemapUrls } from '@/lib/sitemap';
 import { runAllChannels } from '@/lib/channels';
-import { createRun, updateRun, listRuns } from '@/lib/runs';
+import { createRun, updateRun, listRuns, persistValidationResults } from '@/lib/runs';
 import { triggerIndexing } from '@/lib/orchestration';
+import { validateUrlBatch } from '@/lib/validation';
 import crypto from 'crypto';
 
 export const maxDuration = 300;
@@ -40,6 +41,22 @@ export async function POST(request: NextRequest) {
 
     const jobId = crypto.randomUUID();
     runId = await createRun({ job_id: jobId, sitemap_url: sitemapUrl, urls_total: urls.length, urls_success: 0, urls_failed: 0, triggered_by: 'manual', status: 'running' });
+
+    // Pre-warm schema-markup validation gate. Warn-only: results are
+    // persisted to cachewarmer_validation_results for the admin report but
+    // every URL is still warmed regardless of validation outcome.
+    if (config.validation.enabled) {
+      try {
+        const summary = await validateUrlBatch(urls, {
+          concurrency: config.validation.concurrency,
+          useRemoteValidator: config.validation.useRemoteValidator,
+          fetchTimeoutMs: config.validation.fetchTimeoutMs,
+        });
+        await persistValidationResults(runId, summary);
+      } catch (err) {
+        console.warn(`[validation] non-fatal: ${(err as Error).message}`);
+      }
+    }
 
     const channelResults = await runAllChannels(urls, config.channels);
     const totalSuccess = Object.values(channelResults).reduce((s, r) => s + r.success, 0);
