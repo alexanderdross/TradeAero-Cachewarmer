@@ -6,14 +6,28 @@ import { runAllChannels } from '@/lib/channels';
 import { createRun, updateRun, listRuns, persistValidationResults } from '@/lib/runs';
 import { triggerIndexing } from '@/lib/orchestration';
 import { validateUrlBatch } from '@/lib/validation';
+import { isAllowedUrl } from '@/lib/url-guard';
 import crypto from 'crypto';
 
 export const maxDuration = 300;
 
+/**
+ * Clamp a query-param integer to [min, max], falling back to `def` when the
+ * param is absent or not a finite number. Note `Number(null)`/`Number('')`
+ * coerce to `0`, so a missing param is handled explicitly rather than via
+ * the finite-number check.
+ */
+function clampInt(raw: string | null, def: number, min: number, max: number): number {
+  if (raw === null || raw.trim() === '') return def;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return def;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
+
 export async function GET(request: NextRequest) {
   if (!verifyApiKey(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const page = Number(request.nextUrl.searchParams.get('page') ?? '1');
-  const limit = Number(request.nextUrl.searchParams.get('limit') ?? '20');
+  const page = clampInt(request.nextUrl.searchParams.get('page'), 1, 1, Number.MAX_SAFE_INTEGER);
+  const limit = clampInt(request.nextUrl.searchParams.get('limit'), 20, 1, 100);
   const { runs, total } = await listRuns(page, limit);
   return NextResponse.json({ runs, total, page, limit });
 }
@@ -31,6 +45,22 @@ export async function POST(request: NextRequest) {
 
     const sitemapUrl = body.sitemapUrl ?? config.sitemapUrl;
     let urls: string[] = body.urls ?? [];
+
+    // SSRF guard: reject caller-supplied URLs outside the host allowlist
+    // before any outbound fetch happens.
+    if (body.sitemapUrl !== undefined && !isAllowedUrl(body.sitemapUrl)) {
+      return NextResponse.json(
+        { error: `sitemapUrl not permitted by host allowlist: ${body.sitemapUrl}` },
+        { status: 400 },
+      );
+    }
+    const disallowed = urls.filter((u) => !isAllowedUrl(u));
+    if (disallowed.length) {
+      return NextResponse.json(
+        { error: 'One or more urls are not permitted by host allowlist', disallowed },
+        { status: 400 },
+      );
+    }
 
     if (!urls.length) {
       urls = await fetchSitemapUrls(sitemapUrl);

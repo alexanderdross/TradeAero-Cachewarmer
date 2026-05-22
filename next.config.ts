@@ -1,6 +1,9 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
+  // Emit a self-contained server bundle under .next/standalone so the Docker
+  // runtime image only needs the traced node_modules subset.
+  output: 'standalone',
   // p-limit v5 and google-auth-library use Node.js-specific imports (#async_hooks,
   // node: protocol) that webpack cannot bundle. Mark them as external so Next.js
   // lets Node.js resolve them natively at runtime.
