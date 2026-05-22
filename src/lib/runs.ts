@@ -53,8 +53,13 @@ export async function updateRun(id: string, update: Partial<Run>): Promise<void>
  * the only window where heartbeat is NULL is the first few seconds of a run.
  *
  * Returns the number of rows reaped (best-effort; 0 if the count is absent).
+ *
+ * The default threshold (60 min) must stay well above the cron interval
+ * (15 min) plus one invocation's max duration — otherwise a run that is
+ * merely waiting for the next cron tick to resume it from its `cursor`
+ * would be wrongly reaped as "dead", and long runs could never complete.
  */
-export async function reapStaleRuns(staleMs = 600_000): Promise<number> {
+export async function reapStaleRuns(staleMs = 3_600_000): Promise<number> {
   const supabase = getSupabase();
   const cutoff = new Date(Date.now() - staleMs).toISOString();
   const { count, error } = await supabase
