@@ -11,6 +11,7 @@ import {
   findOldestRunningRun,
   findLatestFinishedRun,
   getRun,
+  getRunStatus,
   type Run,
 } from '@/lib/runs';
 import { triggerIndexing } from '@/lib/orchestration';
@@ -149,6 +150,20 @@ export async function GET(request: NextRequest) {
 
   try {
     while (cursor < urls.length) {
+      // Honor operator cancel: re-check status before each batch so a
+      // POST /api/jobs/[id]/cancel that landed mid-invocation stops us
+      // cleanly without overwriting the row's terminal status.
+      const currentStatus = await getRunStatus(active.id!);
+      if (currentStatus !== 'running') {
+        return NextResponse.json({
+          stopped: true,
+          reason: currentStatus ?? 'gone',
+          runId: active.id,
+          cursor,
+          urlsTotal: urls.length,
+        });
+      }
+
       const slice = urls.slice(cursor, cursor + BATCH);
 
       // Pre-warm schema-markup validation. Always run it for validation_only
@@ -239,10 +254,16 @@ export async function GET(request: NextRequest) {
       done,
     });
   } catch (err) {
-    await updateRun(active.id!, {
-      status: 'failed',
-      finished_at: new Date().toISOString(),
-    }).catch(() => {});
+    // If the row was already cancelled by an operator while a batch was
+    // in flight, leave the terminal `cancelled` status alone — don't
+    // overwrite it with `failed`.
+    const current = await getRunStatus(active.id!).catch(() => null);
+    if (current === 'running') {
+      await updateRun(active.id!, {
+        status: 'failed',
+        finished_at: new Date().toISOString(),
+      }).catch(() => {});
+    }
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });
   }
 }
