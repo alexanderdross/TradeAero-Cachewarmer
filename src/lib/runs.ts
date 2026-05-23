@@ -13,7 +13,7 @@ export interface Run {
   // were called. Validation rows in cachewarmer_validation_results are still
   // populated; channel_results stays null.
   triggered_by: 'cron' | 'manual' | 'validation_only';
-  status: 'running' | 'done' | 'failed';
+  status: 'running' | 'done' | 'failed' | 'cancelled';
   started_at?: string;
   finished_at?: string;
   channel_results?: Record<string, ChannelResult>;
@@ -114,6 +114,41 @@ export async function findLatestFinishedRun(): Promise<Run | null> {
     .limit(1);
   const rows = (data ?? []) as Run[];
   return rows[0] ?? null;
+}
+
+/**
+ * Cancel a run on operator request. Atomic: only flips a row that is
+ * currently `running`, so a click that races with natural completion
+ * (status already `done` / `failed`) is a no-op and returns false. The
+ * cron tick re-checks status at the top of each batch (see
+ * `/api/cron/warm`) and bails cleanly when it sees `cancelled`.
+ */
+export async function cancelRun(id: string): Promise<boolean> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('cachewarmer_runs')
+    .update({ status: 'cancelled', finished_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('status', 'running')
+    .select('id')
+    .maybeSingle();
+  if (error) throw error;
+  return !!data;
+}
+
+/**
+ * Lightweight status probe used by the cron tick between batches to detect
+ * a cancel signal without re-fetching the whole row. Returns `null` if the
+ * row is gone (defensive — shouldn't happen in practice).
+ */
+export async function getRunStatus(id: string): Promise<Run['status'] | null> {
+  const supabase = getSupabase();
+  const { data } = await supabase
+    .from('cachewarmer_runs')
+    .select('status')
+    .eq('id', id)
+    .maybeSingle();
+  return (data as { status: Run['status'] } | null)?.status ?? null;
 }
 
 export async function getRun(id: string): Promise<Run | null> {
