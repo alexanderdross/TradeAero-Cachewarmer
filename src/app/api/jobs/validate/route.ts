@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyApiKey } from '@/lib/auth';
 import { loadServiceConfig } from '@/lib/config';
 import { createRun } from '@/lib/runs';
+import { isAllowedUrl } from '@/lib/url-guard';
 import crypto from 'crypto';
 
 // This route only enqueues a run row — the heavy validation work is done in
@@ -32,7 +33,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let body: { sitemapUrl?: string } = {};
+  let body: { sitemapUrl?: string; sections?: string[] } = {};
   try {
     body = await request.json();
   } catch {
@@ -49,6 +50,23 @@ export async function POST(request: NextRequest) {
     }
 
     const sitemapUrl = body.sitemapUrl ?? config.sitemapUrl;
+    const sections = Array.isArray(body.sections) && body.sections.length > 0 ? body.sections : null;
+
+    if (body.sitemapUrl !== undefined && !isAllowedUrl(body.sitemapUrl)) {
+      return NextResponse.json(
+        { error: `sitemapUrl not permitted by host allowlist: ${body.sitemapUrl}` },
+        { status: 400 },
+      );
+    }
+    if (sections) {
+      const badShards = sections.filter((s) => !isAllowedUrl(s));
+      if (badShards.length) {
+        return NextResponse.json(
+          { error: 'One or more sections are not permitted by host allowlist', disallowed: badShards },
+          { status: 400 },
+        );
+      }
+    }
 
     // Enqueue only — do NOT resolve the sitemap here. fetchSitemapUrls()
     // walks ~20 sitemap shards (index + chunked children, each with its own
@@ -64,6 +82,7 @@ export async function POST(request: NextRequest) {
       cursor: 0,
       triggered_by: 'validation_only',
       status: 'running',
+      sections,
     });
 
     return NextResponse.json({ runId, queued: true });

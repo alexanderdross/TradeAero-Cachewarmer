@@ -55,6 +55,45 @@ function extractFromIndex(obj: ParsedXml): string[] {
 }
 
 /**
+ * Fetch a sitemap-index URL and return its child shard URLs. Single-level —
+ * does NOT recurse into the shards themselves. Used by `/api/sitemap-sections`
+ * to render the multi-select chip set in the admin UI.
+ */
+export async function listSitemapIndex(indexUrl: string): Promise<string[]> {
+  assertAllowedUrl(indexUrl);
+  const res = await axios.get<string>(indexUrl, {
+    timeout: 30_000,
+    headers: { 'User-Agent': 'TradeAero-CacheWarmer/1.0' },
+    responseType: 'text',
+    maxRedirects: MAX_REDIRECTS,
+  });
+  const parsed = parser.parse(res.data) as ParsedXml;
+  if (!parsed['sitemapindex']) return [];
+  return extractFromIndex(parsed);
+}
+
+/**
+ * Resolve a caller-picked list of shard URLs into a flat, de-duplicated page
+ * URL list. Each shard is walked with the same recursion-and-dedup rules as
+ * `fetchSitemapUrls`, so a shard that is itself a nested index still expands
+ * cleanly.
+ *
+ * Used when the admin UI scopes a run to specific sitemap sections (e.g. only
+ * `sitemap-aircraft.xml` + `sitemap-images-aircraft.xml`) instead of the whole
+ * root index.
+ */
+export async function fetchUrlsFromShards(shardUrls: string[]): Promise<string[]> {
+  const seen = new Set<string>();
+  for (const shard of shardUrls) {
+    assertAllowedUrl(shard);
+    for (const url of await collectSitemapUrls(shard, 0)) {
+      seen.add(url);
+    }
+  }
+  return Array.from(seen);
+}
+
+/**
  * Fetch and parse a sitemap XML URL, recursively resolving sitemap indexes.
  * Returns a flat array of page URLs, de-duplicated so each URL is warmed /
  * submitted at most once per run.

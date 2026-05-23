@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyApiKey } from '@/lib/auth';
 import { loadServiceConfig } from '@/lib/config';
-import { fetchSitemapUrls } from '@/lib/sitemap';
+import { fetchSitemapUrls, fetchUrlsFromShards } from '@/lib/sitemap';
 import { runAllChannels } from '@/lib/channels';
 import { createRun, updateRun, listRuns, persistValidationResults } from '@/lib/runs';
 import { triggerIndexing } from '@/lib/orchestration';
@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   if (!verifyApiKey(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  let body: { sitemapUrl?: string; urls?: string[] } = {};
+  let body: { sitemapUrl?: string; urls?: string[]; sections?: string[] } = {};
   try { body = await request.json(); } catch { /* empty body */ }
 
   let runId: string | undefined;
@@ -45,6 +45,7 @@ export async function POST(request: NextRequest) {
 
     const sitemapUrl = body.sitemapUrl ?? config.sitemapUrl;
     let urls: string[] = body.urls ?? [];
+    const sections = Array.isArray(body.sections) && body.sections.length > 0 ? body.sections : null;
 
     // SSRF guard: reject caller-supplied URLs outside the host allowlist
     // before any outbound fetch happens.
@@ -61,16 +62,27 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
+    if (sections) {
+      const badShards = sections.filter((s) => !isAllowedUrl(s));
+      if (badShards.length) {
+        return NextResponse.json(
+          { error: 'One or more sections are not permitted by host allowlist', disallowed: badShards },
+          { status: 400 },
+        );
+      }
+    }
 
     if (!urls.length) {
-      urls = await fetchSitemapUrls(sitemapUrl);
+      urls = sections
+        ? await fetchUrlsFromShards(sections)
+        : await fetchSitemapUrls(sitemapUrl);
     }
     if (!urls.length) {
       return NextResponse.json({ error: 'No URLs found in sitemap' }, { status: 400 });
     }
 
     const jobId = crypto.randomUUID();
-    runId = await createRun({ job_id: jobId, sitemap_url: sitemapUrl, urls_total: urls.length, urls_success: 0, urls_failed: 0, triggered_by: 'manual', status: 'running' });
+    runId = await createRun({ job_id: jobId, sitemap_url: sitemapUrl, urls_total: urls.length, urls_success: 0, urls_failed: 0, triggered_by: 'manual', status: 'running', sections });
 
     // Pre-warm schema-markup validation gate. Warn-only: results are
     // persisted to cachewarmer_validation_results for the admin report but
