@@ -25,6 +25,13 @@ export interface Run {
   cursor?: number;
   /** Progress timestamp written every batch; used by the stale-run watchdog. */
   heartbeat_at?: string;
+  /**
+   * Sitemap shard URLs the run is scoped to (e.g. only the aircraft + jobs
+   * shards). NULL or absent = walk the whole root index, current behavior.
+   * Stored as JSONB to keep the column shape flexible if we ever switch to
+   * `{ url, label }[]`.
+   */
+  sections?: string[] | null;
 }
 
 export async function createRun(run: Omit<Run, 'id' | 'started_at'>): Promise<string> {

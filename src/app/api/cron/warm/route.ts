@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyCronSecret } from '@/lib/auth';
 import { loadServiceConfig } from '@/lib/config';
-import { fetchSitemapUrls } from '@/lib/sitemap';
+import { fetchSitemapUrls, fetchUrlsFromShards } from '@/lib/sitemap';
 import { runAllChannels } from '@/lib/channels';
 import {
   createRun,
@@ -94,6 +94,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ skipped: true, reason: 'cachewarmer_disabled' });
     }
 
+    // Fresh cron-driven runs always walk the root sitemap (sections === null);
+    // scoped runs are only created by the admin UI via /api/jobs[/validate].
     urls = await fetchSitemapUrls(config.sitemapUrl);
     if (!urls.length) {
       return NextResponse.json({
@@ -122,7 +124,15 @@ export async function GET(request: NextRequest) {
   } else {
     // Resuming an existing run — re-fetch its sitemap. The sitemap is stable
     // over the lifetime of a run, so re-fetching per invocation is fine.
-    urls = await fetchSitemapUrls(active.sitemap_url ?? config.sitemapUrl);
+    // If the run is scoped to specific sitemap shards (set by /api/jobs or
+    // /api/jobs/validate from the admin UI), walk only those instead of the
+    // root index.
+    const scopedSections = Array.isArray(active.sections) && active.sections.length > 0
+      ? active.sections
+      : null;
+    urls = scopedSections
+      ? await fetchUrlsFromShards(scopedSections)
+      : await fetchSitemapUrls(active.sitemap_url ?? config.sitemapUrl);
   }
 
   // --- Process the active run in time-budgeted batches ------------------

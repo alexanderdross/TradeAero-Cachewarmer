@@ -58,6 +58,11 @@ vi.mock("@/lib/channels", () => ({
 
 vi.mock("@/lib/sitemap", () => ({
   fetchSitemapUrls: vi.fn(async () => ["https://trade.aero/a"]),
+  fetchUrlsFromShards: vi.fn(async () => ["https://trade.aero/aircraft/x"]),
+  listSitemapIndex: vi.fn(async () => [
+    "https://trade.aero/sitemap-aircraft.xml",
+    "https://trade.aero/sitemap-jobs.xml",
+  ]),
 }));
 
 vi.mock("@/lib/validation", () => ({
@@ -77,6 +82,7 @@ vi.mock("@/lib/orchestration", () => ({
 import { GET as healthGET } from "@/app/api/health/route";
 import { GET as jobsGET, POST as jobsPOST } from "@/app/api/jobs/route";
 import { POST as validatePOST } from "@/app/api/jobs/validate/route";
+import { GET as sectionsGET } from "@/app/api/sitemap-sections/route";
 
 const API_KEY = "smoke-key";
 
@@ -174,6 +180,29 @@ describe("POST /api/jobs", () => {
     expect(json.urlsTotal).toBe(1);
     expect(json.channelResults).toBeDefined();
   });
+
+  it("400s when a section shard is outside the host allowlist", async () => {
+    const res = await jobsPOST(
+      jobsRequest("POST", {
+        body: { sections: ["https://evil.example.com/sitemap-aircraft.xml"] },
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("200s with sections-scoped URLs (uses fetchUrlsFromShards)", async () => {
+    const res = await jobsPOST(
+      jobsRequest("POST", {
+        body: {
+          sections: ["https://trade.aero/2d6a9a/sitemap-aircraft.xml"],
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    // The mocked fetchUrlsFromShards returns 1 URL.
+    expect(json.urlsTotal).toBe(1);
+  });
 });
 
 describe("POST /api/jobs/validate", () => {
@@ -203,5 +232,55 @@ describe("POST /api/jobs/validate", () => {
     // work, so there is no urlsTotal in the response.
     expect(json.queued).toBe(true);
     expect(json.runId).toBe("run-1");
+  });
+
+  it("400s when a section shard is outside the host allowlist", async () => {
+    const res = await validatePOST(
+      jobsRequest("POST", {
+        body: { sections: ["https://evil.example.com/sitemap-x.xml"] },
+        path: "/api/jobs/validate",
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("200s and enqueues a sections-scoped validation_only run", async () => {
+    const res = await validatePOST(
+      jobsRequest("POST", {
+        body: {
+          sections: ["https://trade.aero/2d6a9a/sitemap-aircraft.xml"],
+        },
+        path: "/api/jobs/validate",
+      }),
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.queued).toBe(true);
+  });
+});
+
+describe("GET /api/sitemap-sections", () => {
+  function sectionsRequest(auth = true): NextRequest {
+    const headers: Record<string, string> = {};
+    if (auth) headers["x-api-key"] = API_KEY;
+    return new NextRequest("https://warmer.local/api/sitemap-sections", {
+      method: "GET",
+      headers,
+    });
+  }
+
+  it("401s without an API key", async () => {
+    const res = await sectionsGET(sectionsRequest(false));
+    expect(res.status).toBe(401);
+  });
+
+  it("returns the discovered shard list with derived labels", async () => {
+    const res = await sectionsGET(sectionsRequest());
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.sections).toEqual([
+      { url: "https://trade.aero/sitemap-aircraft.xml", label: "aircraft" },
+      { url: "https://trade.aero/sitemap-jobs.xml", label: "jobs" },
+    ]);
   });
 });
