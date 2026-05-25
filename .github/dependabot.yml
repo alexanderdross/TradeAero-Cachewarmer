@@ -1,10 +1,3 @@
-# Dependabot configuration.
-# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
-#
-# Weekly cadence is intentional — daily PR noise outweighs the value for
-# a small API-only service. Security advisories are exempt from the
-# schedule and land as soon as Dependabot picks them up.
-
 version: 2
 updates:
   # Application dependencies (npm)
@@ -12,15 +5,19 @@ updates:
     directory: /
     schedule:
       interval: weekly
-      day: monday
-      time: "06:00"
+      day: sunday
+      time: "22:00"
       timezone: Europe/Berlin
     open-pull-requests-limit: 5
     labels:
       - dependencies
-    # Group non-major bumps into a single PR per week to keep review
-    # overhead bounded. Major bumps still come as individual PRs so
-    # each one gets a deliberate review.
+    cooldown:
+      default-days: 14
+      semver-major-days: 14
+      semver-minor-days: 14
+      semver-patch-days: 14
+      include:
+        - "*"
     groups:
       production-minor-patch:
         dependency-type: production
@@ -32,12 +29,6 @@ updates:
         update-types:
           - minor
           - patch
-    # ESLint v10 fans out across @eslint/js + eslint + the typescript-eslint
-    # ecosystem; bumping any one of them solo always ERESOLVEs against the
-    # others until the whole stack catches up. We hit this on Dependabot
-    # PR #26 (@eslint/js 10.0.1, Vercel build ERESOLVE). Defer the major
-    # bumps until typescript-eslint ships a v10-compatible release; lift
-    # the ignore once the lockfile can resolve them together.
     ignore:
       - dependency-name: eslint
         update-types: [version-update:semver-major]
@@ -53,8 +44,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
-      day: monday
-      time: "06:00"
+      day: sunday
+      time: "22:00"
       timezone: Europe/Berlin
     open-pull-requests-limit: 3
     labels:
