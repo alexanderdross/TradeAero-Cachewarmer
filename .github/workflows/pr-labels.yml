@@ -1,0 +1,150 @@
+name: PR labels
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main]
+    paths:
+      - .github/labels.yml
+      - .github/workflows/pr-labels.yml
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  sync-labels:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EndBug/label-sync@v2
+        with:
+          config: .github/labels.yml
+          # Start as additive; flip to true once the taxonomy has settled.
+          delete-other-labels: false
+
+  infer-type-and-source:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const head = pr.head.ref || '';
+            const title = pr.title || '';
+
+            const desired = new Set();
+
+            // source: from head branch
+            if (/^claude\//i.test(head)) {
+              desired.add('source: claude');
+            } else if (head.startsWith('dependabot/')) {
+              desired.add('source: dependabot');
+            } else {
+              desired.add('source: human');
+            }
+
+            // Parse conventional-commit-style prefix: "<type>(scope)(scope)!?: ..."
+            const prefixMatch = title.match(/^([a-z][a-z0-9-]*)((?:\([^)]*\))*)!?:/i);
+            const typeWord = prefixMatch ? prefixMatch[1].toLowerCase() : '';
+            const scopes = prefixMatch
+              ? (prefixMatch[2].match(/\(([^)]+)\)/g) || []).map(s => s.slice(1, -1).toLowerCase())
+              : [];
+
+            const typeMap = {
+              feat: 'type: feat',
+              fix: 'type: fix',
+              perf: 'type: perf',
+              refactor: 'type: refactor',
+              docs: 'type: docs',
+              test: 'type: test',
+              ci: 'type: ci',
+              chore: 'type: chore',
+              build: 'type: chore',
+              style: 'type: chore',
+              revert: 'type: chore',
+            };
+            desired.add(typeMap[typeWord] || 'type: chore');
+
+            // area hints from type-word + scopes (additive; labeler.yml is the
+            // primary source for area:* via changed paths)
+            const areaHints = {
+              seo: 'area: seo',
+              i18n: 'area: i18n',
+              de: 'area: i18n',
+              ci: 'area: ci',
+              deps: 'area: deps',
+              'dev-deps': 'area: deps',
+              'deps-dev': 'area: deps',
+              admin: 'area: admin-ui',
+              cachewarmer: 'area: cachewarmer',
+              crawler: 'area: crawler',
+              indexing: 'area: indexing',
+            };
+            for (const word of [typeWord, ...scopes]) {
+              for (const part of word.split(/[,\/]/)) {
+                const a = areaHints[part.trim()];
+                if (a) desired.add(a);
+              }
+            }
+
+            // risk: major-bump - Dependabot title "bump X from A.* to B.*" where A != B
+            const bump = title.match(/bump\s+\S+\s+from\s+(\d+)\.\S+\s+to\s+(\d+)\.\S+/i);
+            if (bump && bump[1] !== bump[2]) desired.add('risk: major-bump');
+
+            // status: pre-prod-signoff
+            if (/^docs:\s*final pre-production sign-off/i.test(title)) {
+              desired.add('status: pre-prod-signoff');
+            }
+
+            // needs: rename - auto-generated Claude branch names like "Claude/happy planck kc ork"
+            if (/^Claude\/[a-z]+( [a-z]+){2,}$/i.test(head)) {
+              desired.add('needs: rename');
+            }
+
+            // Sync managed-prefix labels. The labeler action separately manages
+            // area:* additively, so we exclude area:* from removal here even
+            // though we may have added a few from title hints.
+            const existing = (pr.labels || []).map(l => l.name);
+            const managedPrefixes = ['type:', 'source:', 'risk:', 'status:', 'needs:'];
+            const wanted = [...desired];
+            const toRemove = existing.filter(name =>
+              managedPrefixes.some(p => name.startsWith(p)) && !wanted.includes(name)
+            );
+            for (const name of toRemove) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  name,
+                });
+              } catch (e) {
+                if (e.status !== 404) throw e;
+              }
+            }
+
+            if (wanted.length) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                labels: wanted,
+              });
+            }
+
+  infer-area:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler.yml
+          # Additive only: a PR keeps the area:* labels it earned even if a
+          # later push removes the matching files. Avoids racing the script.
+          sync-labels: false
