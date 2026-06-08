@@ -64,7 +64,10 @@ Coverage is available via `npx vitest run --coverage` (v8 provider).
 ## Deploy model
 
 - **Primary:** deployed on Vercel. `vercel.json` schedules
-  `GET /api/cron/warm` twice daily (`0 6,18 * * *`).
+  `GET /api/cron/warm` once daily (`0 5 * * *`) as a *backstop* only —
+  real-time warming is event-driven: the Refactor publish/retranslate
+  pipelines POST the specific changed URLs to `/api/jobs` after a listing
+  is translated, so the daily cron just sweeps up anything missed.
 - **Container:** the `Dockerfile` builds a Next.js standalone image
   (`output: 'standalone'`) and `docker-compose.yml` runs the single
   `cachewarmer` service on port 3001. No other services are required.
