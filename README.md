@@ -43,6 +43,7 @@ rejected with `400`.
 | `CRON_SECRET` | yes | — | Bearer secret for `/api/cron/warm` (fail-closed if unset) |
 | `SITEMAP_URL` | no | `https://trade.aero/sitemap.xml` | Default sitemap |
 | `WARM_ALLOWED_HOSTS` | no | `trade.aero` | Comma-separated host allowlist for outbound fetches |
+| `HEARTBEAT_URL` | no | — | Dead-man's-switch (healthchecks.io / cronitor). The warm cron pings it on a healthy tick and `<url>/fail` when it had to reap stranded `running` runs. No-op when unset; the URL itself is the credential. |
 
 Channel credentials and feature flags are stored in Supabase
 (`cachewarmer_config`, `system_settings`) rather than env vars.
