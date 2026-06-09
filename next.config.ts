@@ -1,4 +1,5 @@
 import type { NextConfig } from 'next';
+import { withSentryConfig } from '@sentry/nextjs';
 
 const nextConfig: NextConfig = {
   // Emit a self-contained server bundle under .next/standalone so the Docker
@@ -12,4 +13,33 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ['p-limit', 'google-auth-library'],
 };
 
-export default nextConfig;
+// withSentryConfig injects the instrumentation and (when fully configured)
+// uploads source maps on deploy. Source-map upload is the most failure-prone
+// step — the Sentry CLI talks to Sentry's API during the build and can stall on
+// a misconfigured auth-token/org/project triple — so we only enable it when ALL
+// THREE env vars are present; a half-configured state degrades to a clean no-op
+// build (mirrors the hardening in TradeAero-Refactor's next.config.ts).
+const sentryUploadEnabled = Boolean(
+  process.env.SENTRY_AUTH_TOKEN &&
+    process.env.SENTRY_ORG &&
+    process.env.SENTRY_PROJECT,
+);
+
+export default withSentryConfig(nextConfig, {
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+  silent: !process.env.CI,
+  sourcemaps: {
+    disable: !sentryUploadEnabled,
+  },
+  widenClientFileUpload: sentryUploadEnabled,
+  disableLogger: true,
+  automaticVercelMonitors: false,
+  // Skip the release-creation API call when the triple isn't complete — the
+  // release step is what hangs on a misconfigured token.
+  release: sentryUploadEnabled
+    ? { create: true, finalize: true }
+    : { create: false, finalize: false },
+  telemetry: false,
+});
