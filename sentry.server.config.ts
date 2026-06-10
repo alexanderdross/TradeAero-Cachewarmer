@@ -17,4 +17,7 @@ Sentry.init({
   tracesSampleRate: process.env.NODE_ENV === "production" ? 0.1 : 0,
   release: process.env.VERCEL_GIT_COMMIT_SHA,
   environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+  // All four TradeAero services share the single `tradeaero` Sentry project;
+  // tag the service so its events separate from refactor/crawler/indexing.
+  initialScope: { tags: { service: "cachewarmer" } },
 });
