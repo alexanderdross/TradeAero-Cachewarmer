@@ -54,6 +54,8 @@ vi.mock("@/lib/runs", () => ({
 
 vi.mock("@/lib/channels", () => ({
   runAllChannels: vi.fn(async () => ({ cdn: { success: 1, failed: 0 } })),
+  WARM_CHANNELS: ["cdn", "cloudflare", "vercel"],
+  isWarmChannel: (n: string) => ["cdn", "cloudflare", "vercel"].includes(n),
 }));
 
 vi.mock("@/lib/sitemap", () => ({
