@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyApiKey } from '@/lib/auth';
 import { loadServiceConfig } from '@/lib/config';
 import { fetchSitemapUrls, fetchUrlsFromShards } from '@/lib/sitemap';
-import { runAllChannels } from '@/lib/channels';
+import { runAllChannels, WARM_CHANNELS, isWarmChannel } from '@/lib/channels';
 import { createRun, updateRun, listRuns, persistValidationResults } from '@/lib/runs';
 import { triggerIndexing } from '@/lib/orchestration';
 import { validateUrlBatch } from '@/lib/validation';
@@ -20,29 +20,11 @@ export const maxDuration = 300;
  * iterate URLs *sequentially* with per-request timeouts + inter-request sleeps.
  * A single slow channel (e.g. linkedin: 20s timeout + 5s sleep per URL) can
  * exceed 300s on its own, and when the function is killed mid-`runAllChannels`
- * the run row is orphaned in `status='running'` forever. Racing the warm
- * against this deadline guarantees we record a terminal status instead.
+ * the run row is orphaned in `status='running'` forever. We pass this budget to
+ * `runAllChannels` as a *per-channel* deadline so a slow channel is recorded as
+ * timed-out (partial results preserved) instead of failing the whole run.
  */
 const WARM_DEADLINE_MS = 250_000;
-
-type Timed<T> = { timedOut: false; value: T } | { timedOut: true; value: null };
-
-/**
- * Resolve to the work's value, or `{ timedOut: true }` if it doesn't settle
- * within `ms`. A rejection propagates (handled by the caller's try/catch).
- * The losing branch keeps running in the background, but the run row has
- * already been finalized, so it can no longer be orphaned.
- */
-function withDeadline<T>(work: Promise<T>, ms: number): Promise<Timed<T>> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<Timed<T>>((resolve) => {
-    timer = setTimeout(() => resolve({ timedOut: true, value: null }), ms);
-  });
-  const wrapped = work
-    .then((value) => ({ timedOut: false as const, value }))
-    .finally(() => { if (timer) clearTimeout(timer); });
-  return Promise.race([wrapped, deadline]);
-}
 
 /**
  * Clamp a query-param integer to [min, max], falling back to `def` when the
@@ -138,33 +120,36 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Race the warm against the budget. Whatever time validation already
-    // consumed is deducted, with a 10s floor so a near-exhausted budget still
-    // gives channels a chance rather than insta-failing.
+    // Targeted (per-listing) jobs carry an explicit `urls` list; full warms
+    // resolve their URLs from the sitemap/sections. Targeted jobs run ONLY the
+    // WARM tier (edge/CDN) — the distribution tier (social + search) is slow,
+    // rate-limited, and owned elsewhere; firing it per publish is what
+    // rate-limited those APIs and timed jobs out at the budget. The full warm
+    // (cron) still runs every enabled channel.
+    const isTargeted = (body.urls?.length ?? 0) > 0;
+
+    // Each channel is bounded by the remaining budget, so a single slow channel
+    // can no longer blow the whole run — runAllChannels always returns the
+    // channels that finished (partial results) instead of a blanket 0/total.
     const remainingMs = Math.max(10_000, WARM_DEADLINE_MS - (Date.now() - warmStart));
-    const timed = await withDeadline(runAllChannels(urls, config.channels), remainingMs);
+    const channelResults = await runAllChannels(urls, config.channels, {
+      deadlineMs: remainingMs,
+      only: isTargeted ? WARM_CHANNELS : undefined,
+    });
 
-    if (timed.timedOut) {
-      // Warming overran the budget — record a terminal status (instead of
-      // leaving the row stuck in 'running' when Vercel kills the function) and
-      // return 200 so the fire-and-forget caller isn't tripped into a retry.
-      await updateRun(runId, {
-        status: 'failed',
-        finished_at: new Date().toISOString(),
-        urls_failed: urls.length,
-      });
-      return NextResponse.json(
-        { jobId, runId, error: 'warm deadline exceeded', urlsTotal: urls.length },
-        { status: 200 },
-      );
-    }
-
-    const channelResults = timed.value;
     const totalSuccess = Object.values(channelResults).reduce((s, r) => s + r.success, 0);
     const totalFailed = Object.values(channelResults).reduce((s, r) => s + r.failed, 0);
 
+    // Job health is judged by the WARM tier (the actual cache warming).
+    // Distribution-channel failures/timeouts never fail the job; a job with no
+    // warm channels configured is still 'done' (there was nothing to warm).
+    const warmNames = Object.keys(channelResults).filter((n) => isWarmChannel(n));
+    const warmSuccess = warmNames.reduce((s, n) => s + channelResults[n].success, 0);
+    const warmFailed = warmNames.reduce((s, n) => s + channelResults[n].failed, 0);
+    const status = warmNames.length > 0 && warmSuccess === 0 && warmFailed > 0 ? 'failed' : 'done';
+
     await updateRun(runId, {
-      status: 'done',
+      status,
       finished_at: new Date().toISOString(),
       urls_success: totalSuccess,
       urls_failed: totalFailed,
@@ -175,7 +160,7 @@ export async function POST(request: NextRequest) {
       try { await triggerIndexing(); } catch { /* non-fatal */ }
     }
 
-    return NextResponse.json({ jobId, runId, channelResults, urlsTotal: urls.length });
+    return NextResponse.json({ jobId, runId, status, channelResults, urlsTotal: urls.length });
   } catch (err) {
     const message = (err as Error).message ?? String(err);
     if (runId) await updateRun(runId, { status: 'failed', finished_at: new Date().toISOString() }).catch(() => {});
