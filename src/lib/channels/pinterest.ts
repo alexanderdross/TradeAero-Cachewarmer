@@ -1,11 +1,14 @@
 import axios from 'axios';
 import type { ChannelResult } from './types';
+import { SEQUENTIAL_CHANNEL_BUDGET_MS, createDeadline } from './budget';
 
 function sleep(ms: number) { return new Promise<void>((r) => setTimeout(r, ms)); }
 
 export interface PinterestConfig {
   accessToken?: string;        // Optional — public endpoint works without it (lower scrape reliability)
   delayBetweenRequests?: number;
+  /** Per-channel wall-clock budget (ms). Defaults to SEQUENTIAL_CHANNEL_BUDGET_MS. */
+  budgetMs?: number;
 }
 
 /**
@@ -17,9 +20,11 @@ export interface PinterestConfig {
  */
 export async function warmPinterest(urls: string[], config: PinterestConfig): Promise<ChannelResult> {
   const delay = config.delayBetweenRequests ?? 3_600;
+  const overBudget = createDeadline(config.budgetMs ?? SEQUENTIAL_CHANNEL_BUDGET_MS);
   let success = 0, failed = 0;
 
   for (let i = 0; i < urls.length; i++) {
+    if (overBudget()) { failed += urls.length - i; break; }
     const url = urls[i];
     try {
       const base = `https://api.pinterest.com/v5/oembed/?url=${encodeURIComponent(url)}`;

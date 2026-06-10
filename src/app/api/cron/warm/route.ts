@@ -16,6 +16,7 @@ import {
 } from '@/lib/runs';
 import { triggerIndexing } from '@/lib/orchestration';
 import { validateUrlBatch } from '@/lib/validation';
+import { pingHeartbeat } from '@/lib/heartbeat';
 import type { ChannelResult } from '@/lib/channels/types';
 import crypto from 'crypto';
 
@@ -67,8 +68,17 @@ export async function GET(request: NextRequest) {
   // invocation stays under `maxDuration`.
   const startedMs = Date.now();
 
-  // Watchdog: free up any run whose invocation was killed mid-batch.
-  await reapStaleRuns();
+  // Watchdog: free up any run whose invocation was killed mid-batch. A
+  // non-zero count means runs are still getting stranded in 'running' — surface
+  // it as a structured warning so it's visible in logs / Vercel log drains.
+  const reaped = await reapStaleRuns();
+  if (reaped > 0) {
+    console.warn(`[warm] reaped ${reaped} stale run(s) stuck in 'running' — possible stall`);
+  }
+  // Dead-man's-switch (mirrors TradeAero-Indexing): a healthy tick pings
+  // HEARTBEAT_URL; a tick that had to reap stranded runs pings <url>/fail so an
+  // external monitor can alert. No-op when HEARTBEAT_URL is unset.
+  await pingHeartbeat(reaped === 0);
 
   const config = await loadServiceConfig();
   const forced = request.nextUrl.searchParams.get('force') === '1';

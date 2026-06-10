@@ -43,6 +43,9 @@ rejected with `400`.
 | `CRON_SECRET` | yes | — | Bearer secret for `/api/cron/warm` (fail-closed if unset) |
 | `SITEMAP_URL` | no | `https://trade.aero/sitemap.xml` | Default sitemap |
 | `WARM_ALLOWED_HOSTS` | no | `trade.aero` | Comma-separated host allowlist for outbound fetches |
+| `HEARTBEAT_URL` | no | — | Dead-man's-switch (healthchecks.io / cronitor). The warm cron pings it on a healthy tick and `<url>/fail` when it had to reap stranded `running` runs. No-op when unset; the URL itself is the credential. |
+| `SENTRY_DSN` | no | — | Sentry DSN for server-side error + performance reporting (route handlers). Inert when unset. |
+| `SENTRY_ORG` / `SENTRY_PROJECT` / `SENTRY_AUTH_TOKEN` | no | — | Build-time only. Enable Sentry source-map upload + release creation on deploy. Upload is gated on **all three** being set — a partial config degrades to a clean no-op build (avoids the CLI stall). |
 
 Channel credentials and feature flags are stored in Supabase
 (`cachewarmer_config`, `system_settings`) rather than env vars.
