@@ -61,10 +61,13 @@ export async function updateRun(id: string, update: Partial<Run>): Promise<void>
  *
  * Returns the number of rows reaped (best-effort; 0 if the count is absent).
  *
- * The default threshold (60 min) must stay well above the cron interval
- * (5 min) plus one invocation's max duration — otherwise a run that is
- * merely waiting for the next cron tick to resume it from its `cursor`
- * would be wrongly reaped as "dead", and long runs could never complete.
+ * The default threshold (60 min) must stay well above the interval at which a
+ * live run advances its `heartbeat_at` — otherwise a run that is merely
+ * between ticks would be wrongly reaped as "dead", and long runs could never
+ * complete. A self-chaining warm run (see `/api/cron/warm`) writes a heartbeat
+ * after every batch and immediately kicks the next tick, so heartbeats land
+ * every ~1-2 min; 60 min leaves ample margin (including a cold start or a
+ * single dropped chain link that the once-daily cron then recovers).
  */
 export async function reapStaleRuns(staleMs = 3_600_000): Promise<number> {
   const supabase = getSupabase();
