@@ -1,8 +1,8 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { verifyCronSecret } from '@/lib/auth';
 import { loadServiceConfig } from '@/lib/config';
 import { fetchSitemapUrls, fetchUrlsFromShards } from '@/lib/sitemap';
-import { runAllChannels } from '@/lib/channels';
+import { runAllChannels, WARM_CHANNELS } from '@/lib/channels';
 import {
   createRun,
   updateRun,
@@ -24,19 +24,27 @@ export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
 
 /**
- * URLs processed per batch. Deliberately small: the time-budget check
- * runs only BETWEEN batches, so a single batch must finish well under
- * `maxDuration` even in the worst case — every URL hanging to a channel's
- * 30s fetch timeout at concurrency 3 (~8 URLs ≈ 90s of warming + ~30s of
- * validation ≈ 120s). A larger batch is what produced the 504s.
+ * URLs processed per batch. The cron warm runs only the WARM tier
+ * (cdn/cloudflare/vercel) — fast parallel GETs with no per-URL social sleeps —
+ * so a batch settles in seconds and we can use a larger batch than the old
+ * all-channels path (which had to stay tiny because pinterest's 4s/URL sleep
+ * dominated). The per-channel `WARM_DEADLINE_MS` still caps a slow batch.
  */
-const BATCH = 8;
+const BATCH = 40;
 /**
- * Wall-clock budget for one invocation. Must leave headroom for one more
- * worst-case batch (~120s) plus the finalize write, all under the 300s
- * `maxDuration` (150s budget + 120s batch ≈ 270s).
+ * Wall-clock budget for one invocation's batch loop. Kept well under
+ * `maxDuration` (300s) so the after()-scheduled pipeline always finishes —
+ * including the finalize write + the self-chain kick — before Vercel reclaims
+ * the function.
  */
-const BUDGET_MS = 150_000;
+const BUDGET_MS = 120_000;
+/**
+ * Per-channel deadline handed to runAllChannels. Generous (a healthy warm
+ * answers in well under a second per URL); it only bites if a channel hangs,
+ * in which case it returns real partial counts instead of monopolising the
+ * budget.
+ */
+const WARM_DEADLINE_MS = 60_000;
 /**
  * Minimum gap between cron-driven warm runs. A manual trigger passes
  * `?force=1` to bypass this throttle.
@@ -44,77 +52,109 @@ const BUDGET_MS = 150_000;
 const MIN_RUN_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 /**
+ * Resolve this deployment's own base URL so a tick can kick the next one.
+ * Mirrors /api/admin/trigger.
+ */
+function selfBaseUrl(): string {
+  return (
+    process.env.CACHEWARMER_INTERNAL_URL ??
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL
+      ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+      : process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : 'http://localhost:3001')
+  );
+}
+
+/**
+ * Fire-and-forget kick of the next warm tick so a long (resumable) run advances
+ * immediately instead of waiting for the once-daily cron. The next tick acks
+ * instantly (it schedules its own work in after()), so this fetch returns in
+ * milliseconds — no nested keep-alive, no FUNCTION_INVOCATION_TIMEOUT. `?force=1`
+ * skips the throttle; since a run is already `running`, the next tick resumes it
+ * from its cursor rather than starting a fresh run.
+ */
+async function chainNextTick(): Promise<void> {
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret) return;
+  try {
+    await fetch(`${selfBaseUrl()}/api/cron/warm?force=1`, {
+      headers: { Authorization: `Bearer ${cronSecret}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    // Non-fatal: if the kick is lost the run stays `running` and the daily
+    // cron resumes it on the next tick (reaper threshold stays above the
+    // per-tick interval so an actively-chaining run is never reaped).
+  }
+}
+
+/**
  * GET /api/cron/warm
  *
- * Cron-tick-driven, resumable warm pipeline. Each invocation:
+ * Cron-tick-driven, resumable, **self-chaining** warm pipeline. The handler
+ * acks immediately and runs the work in `after()`; each invocation:
  *   1. Reaps stale (killed mid-batch) runs via the heartbeat watchdog.
  *   2. Resumes the oldest in-progress run from its `cursor`, OR — when none
  *      is in progress and the throttle allows — starts a fresh warm run.
- *   3. Processes URLs in time-budgeted batches, persisting `cursor` +
- *      accumulated counts after every batch. If the budget runs out the run
- *      stays `running` and the next cron tick picks up where it left off.
- *
- * No self-fetch / self-chaining — progress is purely cursor-based and the
- * cron schedule is what advances long runs.
+ *   3. Processes URLs in time-budgeted batches (WARM tier only), persisting
+ *      `cursor` + accumulated counts after every batch.
+ *   4. If the budget runs out with URLs remaining, kicks the next tick so the
+ *      run advances right away. The once-daily Vercel cron is now only a
+ *      backstop that starts a fresh warm / recovers a dropped chain.
  */
 export async function GET(request: NextRequest) {
   if (!verifyCronSecret(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  // Start the wall-clock budget here — BEFORE the config load and sitemap
-  // fetch — so the per-batch budget check accounts for that startup cost
-  // (the sitemap walk alone can take tens of seconds) and the whole
-  // invocation stays under `maxDuration`.
+  const forced = request.nextUrl.searchParams.get('force') === '1';
+
+  // Ack immediately and do the work after the response is flushed. This keeps
+  // the self-chain kick (chainNextTick) cheap — the kicked invocation returns
+  // here in milliseconds while its own batch loop runs in its own after().
+  after(() => runWarmTick(forced));
+
+  return NextResponse.json({ accepted: true });
+}
+
+async function runWarmTick(forced: boolean): Promise<void> {
+  // Start the wall-clock budget before the config load and sitemap fetch so the
+  // per-batch budget check accounts for that startup cost.
   const startedMs = Date.now();
 
-  // Watchdog: free up any run whose invocation was killed mid-batch. A
-  // non-zero count means runs are still getting stranded in 'running' — surface
-  // it as a structured warning so it's visible in logs / Vercel log drains.
+  // Watchdog: free up any run whose invocation was killed mid-batch.
   const reaped = await reapStaleRuns();
   if (reaped > 0) {
     console.warn(`[warm] reaped ${reaped} stale run(s) stuck in 'running' — possible stall`);
   }
-  // Dead-man's-switch (mirrors TradeAero-Indexing): a healthy tick pings
-  // HEARTBEAT_URL; a tick that had to reap stranded runs pings <url>/fail so an
-  // external monitor can alert. No-op when HEARTBEAT_URL is unset.
+  // Dead-man's-switch: healthy tick pings HEARTBEAT_URL; a tick that had to reap
+  // pings <url>/fail. No-op when HEARTBEAT_URL is unset.
   await pingHeartbeat(reaped === 0);
 
   const config = await loadServiceConfig();
-  const forced = request.nextUrl.searchParams.get('force') === '1';
 
   // --- Determine the run to work on -------------------------------------
   let active = await findOldestRunningRun();
   let urls: string[];
 
   if (!active) {
-    // No in-progress run. Decide whether to start a fresh warm run. A
-    // validation_only run is always created by /api/jobs/validate, never
-    // here, so the cachewarmer-disabled gate applies cleanly to fresh runs.
     if (!forced) {
       const latest = await findLatestFinishedRun();
       if (
         latest?.finished_at &&
         Date.now() - new Date(latest.finished_at).getTime() < MIN_RUN_INTERVAL_MS
       ) {
-        return NextResponse.json({ skipped: true, reason: 'recently_warmed' });
+        return; // recently_warmed
       }
     }
 
-    if (!config.cachwarmerEnabled) {
-      return NextResponse.json({ skipped: true, reason: 'cachewarmer_disabled' });
-    }
+    if (!config.cachwarmerEnabled) return; // cachewarmer_disabled
 
     // Fresh cron-driven runs always walk the root sitemap (sections === null);
     // scoped runs are only created by the admin UI via /api/jobs[/validate].
     urls = await fetchSitemapUrls(config.sitemapUrl);
-    if (!urls.length) {
-      return NextResponse.json({
-        skipped: true,
-        reason: 'sitemap_empty',
-        sitemapUrl: config.sitemapUrl,
-      });
-    }
+    if (!urls.length) return; // sitemap_empty
 
     const runId = await createRun({
       job_id: crypto.randomUUID(),
@@ -129,15 +169,13 @@ export async function GET(request: NextRequest) {
 
     const fresh = await getRun(runId);
     if (!fresh) {
-      return NextResponse.json({ error: 'failed to load freshly created run' }, { status: 500 });
+      console.error('[warm] failed to load freshly created run');
+      return;
     }
     active = fresh;
   } else {
-    // Resuming an existing run — re-fetch its sitemap. The sitemap is stable
-    // over the lifetime of a run, so re-fetching per invocation is fine.
-    // If the run is scoped to specific sitemap shards (set by /api/jobs or
-    // /api/jobs/validate from the admin UI), walk only those instead of the
-    // root index.
+    // Resuming an existing run — re-fetch its sitemap (stable over the run's
+    // lifetime). Scoped runs (set by the admin UI) walk only their shards.
     const scopedSections = Array.isArray(active.sections) && active.sections.length > 0
       ? active.sections
       : null;
@@ -160,25 +198,14 @@ export async function GET(request: NextRequest) {
 
   try {
     while (cursor < urls.length) {
-      // Honor operator cancel: re-check status before each batch so a
-      // POST /api/jobs/[id]/cancel that landed mid-invocation stops us
-      // cleanly without overwriting the row's terminal status.
+      // Honor operator cancel between batches.
       const currentStatus = await getRunStatus(active.id!);
-      if (currentStatus !== 'running') {
-        return NextResponse.json({
-          stopped: true,
-          reason: currentStatus ?? 'gone',
-          runId: active.id,
-          cursor,
-          urlsTotal: urls.length,
-        });
-      }
+      if (currentStatus !== 'running') return; // stopped/cancelled/gone
 
       const slice = urls.slice(cursor, cursor + BATCH);
 
-      // Pre-warm schema-markup validation. Always run it for validation_only
-      // runs; gate it behind validation.enabled for warm runs. Warn-only —
-      // a validation failure never aborts the batch.
+      // Pre-warm schema-markup validation. Always for validation_only runs;
+      // otherwise gated behind validation.enabled. Warn-only.
       if (validationOnly || config.validation.enabled) {
         try {
           const summary = await validateUrlBatch(slice, {
@@ -197,7 +224,15 @@ export async function GET(request: NextRequest) {
       }
 
       if (!validationOnly) {
-        const cr = await runAllChannels(slice, config.channels);
+        // WARM tier only: distribution channels (social + search) are slow
+        // (mandatory per-URL sleeps) and rate-limited — firing them on every
+        // URL of a ~60k full warm is what made it impossible to complete and
+        // hammered those APIs. Cache warming is the WARM tier's job; the
+        // per-publish targeted path owns distribution.
+        const cr = await runAllChannels(slice, config.channels, {
+          only: WARM_CHANNELS,
+          deadlineMs: WARM_DEADLINE_MS,
+        });
         for (const [name, result] of Object.entries(cr)) {
           const prev = channelResults[name] ?? { success: 0, failed: 0 };
           channelResults[name] = {
@@ -211,12 +246,9 @@ export async function GET(request: NextRequest) {
 
       cursor += slice.length;
 
-      // Persist progress after every batch — this is the write that the old
-      // single-shot pipeline never reached.
+      // Persist progress after every batch.
       const update: Partial<Run> = {
         cursor,
-        // Stamp urls_total — validation_only runs are enqueued by
-        // /api/jobs/validate with 0; the sitemap is resolved here.
         urls_total: urls.length,
         urls_success: urlsSuccess,
         urls_failed: urlsFailed,
@@ -226,8 +258,6 @@ export async function GET(request: NextRequest) {
         validation_fetch_failed: vFail,
         heartbeat_at: new Date().toISOString(),
       };
-      // Never send channel_results for a validation_only run — passing
-      // `undefined` could blank the column.
       if (!validationOnly) update.channel_results = channelResults;
       await updateRun(active.id!, update);
 
@@ -244,29 +274,23 @@ export async function GET(request: NextRequest) {
         urls_failed: urlsFailed,
       });
 
-      if (
-        !validationOnly &&
-        config.orchestration.enabled &&
-        config.indexingEnabled
-      ) {
+      if (!validationOnly && config.orchestration.enabled && config.indexingEnabled) {
         try {
           await triggerIndexing();
         } catch {
           /* non-fatal */
         }
       }
+      return;
     }
 
-    return NextResponse.json({
-      runId: active.id,
-      cursor,
-      urlsTotal: urls.length,
-      done,
-    });
+    // Budget hit with URLs remaining — self-chain so the run advances now
+    // instead of waiting for the once-daily cron. Re-check status first so a
+    // cancel that landed during the last batch doesn't get re-kicked.
+    const stillRunning = (await getRunStatus(active.id!).catch(() => null)) === 'running';
+    if (stillRunning) await chainNextTick();
   } catch (err) {
-    // If the row was already cancelled by an operator while a batch was
-    // in flight, leave the terminal `cancelled` status alone — don't
-    // overwrite it with `failed`.
+    // Leave a terminal `cancelled` status alone; otherwise mark failed.
     const current = await getRunStatus(active.id!).catch(() => null);
     if (current === 'running') {
       await updateRun(active.id!, {
@@ -274,6 +298,6 @@ export async function GET(request: NextRequest) {
         finished_at: new Date().toISOString(),
       }).catch(() => {});
     }
-    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
+    console.error(`[warm] tick failed: ${(err as Error).message}`);
   }
 }
