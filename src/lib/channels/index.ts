@@ -75,9 +75,19 @@ export async function runAllChannels(
 
   const tasks: Array<{ name: string; promise: Promise<ChannelResult> }> = [];
 
-  if (want('cdn')) tasks.push({ name: 'cdn', promise: warmCdn(urls, channels.cdn!.config) });
-  if (want('cloudflare')) tasks.push({ name: 'cloudflare', promise: warmCloudflare(urls, channels.cloudflare!.config as any) });
-  if (want('vercel')) tasks.push({ name: 'vercel', promise: warmVercelEdge(urls, channels.vercel!.config) });
+  // Warm channels self-limit to (a little under) the per-channel deadline so
+  // they return real partial counts before `withChannelDeadline` would fire
+  // and discard them as 0/total. Leave headroom for an in-flight 30s fetch to
+  // settle after the budget elapses. When no deadline is set (the cron's small
+  // cursor-chunked batches) the channel falls back to its generous default.
+  const warmBudget = (cfg: Record<string, any>): Record<string, any> =>
+    opts.deadlineMs
+      ? { ...cfg, budgetMs: Math.max(1_000, opts.deadlineMs - 35_000) }
+      : cfg;
+
+  if (want('cdn')) tasks.push({ name: 'cdn', promise: warmCdn(urls, warmBudget(channels.cdn!.config)) });
+  if (want('cloudflare')) tasks.push({ name: 'cloudflare', promise: warmCloudflare(urls, warmBudget(channels.cloudflare!.config) as any) });
+  if (want('vercel')) tasks.push({ name: 'vercel', promise: warmVercelEdge(urls, warmBudget(channels.vercel!.config)) });
   if (want('facebook')) tasks.push({ name: 'facebook', promise: warmFacebook(urls, channels.facebook!.config as any) });
   if (want('linkedin')) tasks.push({ name: 'linkedin', promise: warmLinkedin(urls, channels.linkedin!.config as any) });
   if (want('google')) tasks.push({ name: 'google', promise: warmGoogle(urls, channels.google!.config as any) });
